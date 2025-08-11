@@ -1,6 +1,7 @@
 #include <zephyr/kernel.h>
 #include "../include/mbedtls/threading.h"
 
+#if defined(CONFIG_MBEDTLS_SHA256_LINKEDSEMI)
 static void zephyr_mbedtls_mutex_init(mbedtls_threading_mutex_t *mutex)
 {
     k_mutex_init(&mutex->k_mtx);
@@ -39,5 +40,6 @@ void mbedtls_zephyr_threading_init(void)
                               zephyr_mbedtls_mutex_unlock);
     #endif
 }
+#endif /* CONFIG_MBEDTLS_SHA256_LINKEDSEMI */
 
 

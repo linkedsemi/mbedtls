@@ -4,6 +4,7 @@
 #include <string.h>
 #include <ls_hal_crypt.h>
 
+#if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
 #define AES_BLOCK_SIZE 16
 
 void mbedtls_aes_init(mbedtls_aes_context *ctx)
@@ -79,3 +80,4 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
     }
 
 }
+#endif /* CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI */

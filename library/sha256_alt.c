@@ -6,7 +6,7 @@
 #include "../include/mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
 
-
+#if defined(CONFIG_MBEDTLS_SHA256_LINKEDSEMI)
 static mbedtls_threading_mutex_t doneLock;
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 
@@ -80,3 +80,4 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *lsCtx,
     mbedtls_mutex_unlock(&doneLock);
     return ret;
 }
+#endif /* CONFIG_MBEDTLS_SHA256_LINKEDSEMI */
