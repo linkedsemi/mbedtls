@@ -52,28 +52,28 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     return 0;
 }
 
-int mbedtls_sha512_update(mbedtls_sha512_context *lsCtx,
+int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-    if (!lsCtx->start_calc_symbol)
+    if (!ctx->start_calc_symbol)
     {
         mbedtls_mutex_lock(&doneLock);
-        ls_sha_ctx = lsCtx;
-        lsCtx->start_calc_symbol = true;
+        ls_sha_ctx = ctx;
+        ctx->start_calc_symbol = true;
     }
-    assert(ls_sha_ctx == lsCtx);
+    assert(ls_sha_ctx == ctx);
     HAL_SHA512_SHA512_Update((uint32_t *)input, ilen);
     return 0;
 }
 
-int mbedtls_sha512_finish(mbedtls_sha512_context *lsCtx,
+int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
                           unsigned char *output)
 {
-    assert(ls_sha_ctx == lsCtx);
+    assert(ls_sha_ctx == ctx);
     HAL_SHA512_SHA512_Final(output);
     ls_sha_ctx = NULL;
-    lsCtx->start_calc_symbol = false;
+    ctx->start_calc_symbol = false;
     mbedtls_mutex_unlock(&doneLock);
     return 0;
 }

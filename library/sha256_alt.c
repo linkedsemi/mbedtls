@@ -10,6 +10,35 @@
 static mbedtls_threading_mutex_t doneLock;
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 
+void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
+{
+    mbedtls_sha256_init(ctx);
+}
+
+int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
+{
+    HAL_LSSHA_SM3_Init();
+    return 0;
+}
+
+int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
+                          const unsigned char *input,
+                          size_t ilen)
+{
+    return mbedtls_sha256_update(ctx, input, ilen);
+}
+
+int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
+                          unsigned char *output)
+{
+    return mbedtls_sha256_finish(ctx, output);
+}
+
+void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
+{
+    mbedtls_sha256_free(ctx);
+}
+
 void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha256_context));
@@ -52,31 +81,31 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     return 0;
 }
 
-int mbedtls_sha256_update(mbedtls_sha256_context *lsCtx,
+int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    if (!lsCtx->start_calc_symbol)
+    if (!ctx->start_calc_symbol)
     {
         mbedtls_mutex_lock(&doneLock);
-        ls_sha_ctx = lsCtx;
-        lsCtx->start_calc_symbol = true;
+        ls_sha_ctx = ctx;
+        ctx->start_calc_symbol = true;
     }
-    assert(ls_sha_ctx == lsCtx);
+    assert(ls_sha_ctx == ctx);
 
     ret = HAL_LSSHA_Update(input, ilen);
     return ret;
 }
 
-int mbedtls_sha256_finish(mbedtls_sha256_context *lsCtx,
+int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
                           unsigned char *output)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    assert(ls_sha_ctx == lsCtx);
+    assert(ls_sha_ctx == ctx);
     ret = HAL_LSSHA_Final(output);
     ls_sha_ctx = NULL;
-    lsCtx->start_calc_symbol = false;
+    ctx->start_calc_symbol = false;
     mbedtls_mutex_unlock(&doneLock);
     return ret;
 }
