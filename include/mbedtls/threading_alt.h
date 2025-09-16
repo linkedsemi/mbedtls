@@ -2,7 +2,7 @@
 #define THREADING_ALT_H
 #include <zephyr/kernel.h>
 
-#if defined(CONFIG_MBEDTLS_SHA256_LINKEDSEMI) || defined(CONFIG_MBEDTLS_SHA512_LINKEDSEMI)
+#if defined(CONFIG_SOC_LSQSH)||defined(CONFIG_SOC_LS1010)
 typedef struct {
     struct k_mutex k_mtx;
 } mbedtls_threading_mutex_t;

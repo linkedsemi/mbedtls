@@ -1,7 +1,7 @@
 #include <zephyr/kernel.h>
 #include "../include/mbedtls/threading.h"
 
-#if defined(CONFIG_MBEDTLS_SHA256_LINKEDSEMI) || defined (CONFIG_MBEDTLS_SHA512_LINKEDSEMI)
+#if defined(CONFIG_SOC_LSQSH)||defined(CONFIG_SOC_LS1010)
 static void zephyr_mbedtls_mutex_init(mbedtls_threading_mutex_t *mutex)
 {
     k_mutex_init(&mutex->k_mtx);

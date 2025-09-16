@@ -42,7 +42,7 @@ void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
 void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha256_context));
-    mbedtls_zephyr_threading_init();
+    // mbedtls_zephyr_threading_init();
     mbedtls_mutex_init(&doneLock);
     HAL_LSSHA_Init();
 }

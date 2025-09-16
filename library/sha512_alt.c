@@ -12,7 +12,7 @@ static mbedtls_sha512_context* ls_sha_ctx = NULL;
 void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha512_context));
-    mbedtls_zephyr_threading_init();
+    // mbedtls_zephyr_threading_init();
     mbedtls_mutex_init(&doneLock);
     HAL_SHA512_Init();
 }
