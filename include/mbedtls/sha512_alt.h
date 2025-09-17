@@ -5,6 +5,7 @@
 #if defined(CONFIG_MBEDTLS_SHA512_LINKEDSEMI)
 typedef struct mbedtls_sha512_context {
     bool start_calc_symbol;
+    bool is384;
 }
 mbedtls_sha512_context;
 #endif /* CONFIG_MBEDTLS_SHA512_LINKEDSEMI */

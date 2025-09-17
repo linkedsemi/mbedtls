@@ -28,8 +28,8 @@
 extern "C" {
 #endif
 
-void mbedtls_ls_otbn_moudle_init(void);
-void mbedtls_ls_otbn_moudle_deinit(void);
+void mbedtls_ls_otbn_ecdsa_init(void);
+void mbedtls_ls_otbn_ecdsa_deinit(void);
 
 #ifdef __cplusplus
 }
