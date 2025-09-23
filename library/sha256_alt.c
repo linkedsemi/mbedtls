@@ -71,7 +71,18 @@ void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
     mbedtls_ls_otbn_moudle_init();
     k_sem_init(&wait_complete,0,1);
 #else
-    HAL_LSSHA_Init();
+    #if CONFIG_SOC_LS1010
+        HAL_LSSHA_Init();
+    #elif CONFIG_SOC_LSQSH
+        #if CONFIG_SHA256_CLOCK_RESET
+            #include "reg_sysc_sec_cpu.h"
+            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
+            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CALC_SHA_MASK;
+            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CALC_SHA_MASK;
+            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CALC_SHA_MASK;
+        #endif
+    #endif
+
 #endif
 }
 

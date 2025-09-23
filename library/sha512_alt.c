@@ -40,7 +40,13 @@ void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
     mbedtls_ls_otbn_moudle_init();
     k_sem_init(&wait_complete,0,1);
 #else
-    HAL_SHA512_Init();
+    #if CONFIG_SHA512_CLOCK_RESET
+    #include "reg_sysc_sec_cpu.h"
+        SYSC_SEC_CPU->PD_CPU_CLKG[0] = SYSC_SEC_CPU_CLKG_CLR_SHA512_MASK;
+        SYSC_SEC_CPU->PD_CPU_SRST[0] = SYSC_SEC_CPU_SRST_CLR_SHA512_MASK;
+        SYSC_SEC_CPU->PD_CPU_SRST[0] = SYSC_SEC_CPU_SRST_SET_SHA512_MASK;
+        SYSC_SEC_CPU->PD_CPU_CLKG[0] = SYSC_SEC_CPU_CLKG_SET_SHA512_MASK;
+    #endif
 #endif
 }
 
