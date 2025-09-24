@@ -3,6 +3,11 @@
 #include "mbedtls/aes.h"
 #include <string.h>
 #include <ls_hal_crypt.h>
+#if CONFIG_SOC_LSQSH
+    #if CONFIG_AES_CLOCK_RESET
+        #include "reg_sysc_sec_cpu.h"
+    #endif
+#endif
 
 #if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
 #define AES_BLOCK_SIZE 16
@@ -14,7 +19,6 @@ void mbedtls_aes_init(mbedtls_aes_context *ctx)
     HAL_LSCRYPT_Init();
 #elif CONFIG_SOC_LSQSH
     #if CONFIG_AES_CLOCK_RESET
-        #include "reg_sysc_sec_cpu.h"
         SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CRYPT_MASK;
         SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CRYPT_MASK;
         SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CRYPT_MASK;

@@ -4,6 +4,10 @@
 #include "../include/mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
 
+#if CONFIG_SHA512_CLOCK_RESET
+#include "reg_sysc_sec_cpu.h"
+#endif
+
 #if defined(CONFIG_ENABLE_LS_OTBN_HASH)
 #include "ls_hal_otbn_sha.h"
 #include "ls_hal_otbn.h"
