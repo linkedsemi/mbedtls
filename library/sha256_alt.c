@@ -29,7 +29,7 @@ static void mbedtls_ls_otbn_sha256_handler()
     if (LSOTBN->INTR_STATE)
     {
         LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
-        k_sem_give(&wait_complete);
+        // k_sem_give(&wait_complete);
 
     }
 }

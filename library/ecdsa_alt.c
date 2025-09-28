@@ -105,7 +105,7 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
     size_t n_size = (grp->nbits + 7) / 8;
     size_t use_size = blen > n_size ? n_size : blen;
     ecc_remote_addr otbn_curve_info;
-    if(!(grp->id == MBEDTLS_ECP_DP_BP384R1 || grp->id == MBEDTLS_ECP_DP_SECP256R1 || grp->id == MBEDTLS_ECP_DP_SM2))
+    if(!(grp->id == MBEDTLS_ECP_DP_SECP384R1 || grp->id == MBEDTLS_ECP_DP_SECP256R1 || grp->id == MBEDTLS_ECP_DP_SM2))
     {
         printf(" the curve is not supported, curve id: %d",grp->id);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
@@ -189,7 +189,7 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
     size_t use_size = blen > n_size ? n_size : blen;
     ecc_remote_addr otbn_curve_info;
 
-    if(!(grp->id == MBEDTLS_ECP_DP_BP384R1 || grp->id == MBEDTLS_ECP_DP_SECP256R1 || grp->id == MBEDTLS_ECP_DP_SM2))
+    if(!(grp->id == MBEDTLS_ECP_DP_SECP384R1 || grp->id == MBEDTLS_ECP_DP_SECP256R1 || grp->id == MBEDTLS_ECP_DP_SM2))
     {
         printf(" the curve is not supported, curve id: %d",grp->id);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
@@ -266,7 +266,7 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     size_t n_size = (ctx->grp.nbits + 7) / 8;
     ecc_remote_addr otbn_curve_info;
 
-    if(!(gid == MBEDTLS_ECP_DP_BP384R1 || gid == MBEDTLS_ECP_DP_SECP256R1 || gid == MBEDTLS_ECP_DP_SM2))
+    if(!(gid == MBEDTLS_ECP_DP_SECP384R1 || gid == MBEDTLS_ECP_DP_SECP256R1 || gid == MBEDTLS_ECP_DP_SM2))
     {
         printf(" the curve is not supported, curve id: %d",gid);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
