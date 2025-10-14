@@ -3,6 +3,7 @@
 #include "mbedtls/aes.h"
 #include <string.h>
 #include <ls_hal_crypt.h>
+#include "mbedtls/error.h"
 #if CONFIG_SOC_LSQSH
     #if CONFIG_AES_CLOCK_RESET
         #include "reg_sysc_sec_cpu.h"
@@ -41,16 +42,22 @@ int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
     uint8_t keysize = 0;
-    if (keybits == 16)
+    if (keybits == 128)
         keysize = AES_KEY_128;
-    else if (keybits == 24)
+    else if (keybits == 192)
         keysize = AES_KEY_192;
-    else if (keybits == 32)
+    else if (keybits == 256)
         keysize = AES_KEY_256;
     else
         return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
 
     return HAL_LSCRYPT_AES_Key_Config((uint32_t *)key, keysize);
+}
+
+int mbedtls_aes_setkey_dec(mbedtls_aes_context *ctx, const unsigned char *key,
+                           unsigned int keybits)
+{
+    return mbedtls_aes_setkey_enc(ctx, key, keybits);
 }
 
 int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
@@ -93,5 +100,148 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         return HAL_LSCRYPT_AES_CBC_Decrypt(input, length, output, &length);
     }
 
+}
+
+int mbedtls_aes_crypt_cfb128(mbedtls_aes_context *ctx,
+                             int mode,
+                             size_t length,
+                             size_t *iv_off,
+                             unsigned char iv[16],
+                             const unsigned char *input,
+                             unsigned char *output)
+{
+    int c;
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    size_t n;
+
+    if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    n = *iv_off;
+
+    if (n > 15) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    if (mode == MBEDTLS_AES_DECRYPT) {
+        while (length--) {
+            if (n == 0) {
+                ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+                if (ret != 0) {
+                    goto exit;
+                }
+            }
+
+            c = *input++;
+            *output++ = (unsigned char) (c ^ iv[n]);
+            iv[n] = (unsigned char) c;
+
+            n = (n + 1) & 0x0F;
+        }
+    } else {
+        while (length--) {
+            if (n == 0) {
+                ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+                if (ret != 0) {
+                    goto exit;
+                }
+            }
+
+            iv[n] = *output++ = (unsigned char) (iv[n] ^ *input++);
+
+            n = (n + 1) & 0x0F;
+        }
+    }
+
+    *iv_off = n;
+    ret = 0;
+
+exit:
+    return ret;
+}
+
+int mbedtls_aes_crypt_cfb8(mbedtls_aes_context *ctx,
+                           int mode,
+                           size_t length,
+                           unsigned char iv[16],
+                           const unsigned char *input,
+                           unsigned char *output)
+{
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    unsigned char c;
+    unsigned char ov[17];
+
+    if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+    while (length--) {
+        memcpy(ov, iv, 16);
+        ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+        if (ret != 0) {
+            goto exit;
+        }
+
+        if (mode == MBEDTLS_AES_DECRYPT) {
+            ov[16] = *input;
+        }
+
+        c = *output++ = (unsigned char) (iv[0] ^ *input++);
+
+        if (mode == MBEDTLS_AES_ENCRYPT) {
+            ov[16] = c;
+        }
+
+        memcpy(iv, ov + 1, 16);
+    }
+    ret = 0;
+
+exit:
+    return ret;
+}
+
+int mbedtls_aes_crypt_ofb(mbedtls_aes_context *ctx,
+                          size_t length,
+                          size_t *iv_off,
+                          unsigned char iv[16],
+                          const unsigned char *input,
+                          unsigned char *output)
+{
+    int ret = 0;
+    size_t n;
+
+    n = *iv_off;
+
+    if (n > 15) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    while (length--) {
+        if (n == 0) {
+            ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+            if (ret != 0) {
+                goto exit;
+            }
+        }
+        *output++ =  *input++ ^ iv[n];
+
+        n = (n + 1) & 0x0F;
+    }
+
+    *iv_off = n;
+
+exit:
+    return ret;
+}
+
+int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
+                          size_t length,
+                          size_t *nc_off,
+                          unsigned char nonce_counter[16],
+                          unsigned char stream_block[16],
+                          const unsigned char *input,
+                          unsigned char *output)
+{
+    return HAL_LSCRYPT_AES_CTR_Crypt(nonce_counter, (uint8_t*)input, length, (uint8_t*)output);
 }
 #endif /* CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI */
