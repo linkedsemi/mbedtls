@@ -30,7 +30,7 @@ static void mbedtls_ls_otbn_sha512_handler()
 }
 #endif
 
-#if defined(CONFIG_MBEDTLS_SHA512_LINKEDSEMI)
+#if defined(CONFIG_MBEDTLS_HARDWARE_SHA384_SHA512_LINKEDSEMI)
 #include <ls_hal_sha512.h>
 static mbedtls_threading_mutex_t doneLock;
 static mbedtls_sha512_context* ls_sha_ctx = NULL;
@@ -157,4 +157,4 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 }
 
 
-#endif /* CONFIG_MBEDTLS_SHA512_LINKEDSEMI */
+#endif /* CONFIG_MBEDTLS_HARDWARE_SHA384_SHA512_LINKEDSEMI */

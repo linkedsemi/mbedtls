@@ -40,6 +40,4 @@ void mbedtls_zephyr_threading_init(void)
                               zephyr_mbedtls_mutex_unlock);
     #endif
 }
-#endif /* CONFIG_MBEDTLS_SHA256_LINKEDSEMI || CONFIG_MBEDTLS_SHA512_LINKEDSEMI */
-
-
+#endif

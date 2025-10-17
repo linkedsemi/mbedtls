@@ -8,6 +8,5 @@ typedef struct {
 } mbedtls_threading_mutex_t;
 
 void mbedtls_zephyr_threading_init(void);
-#endif /* CONFIG_MBEDTLS_SHA256_LINKEDSEMI || CONFIG_MBEDTLS_SHA512_LINKEDSEMI*/
-
+#endif
 #endif /* threading_alt.h */

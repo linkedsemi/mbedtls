@@ -35,7 +35,7 @@ static void mbedtls_ls_otbn_sha256_handler()
 }
 #endif
 
-#if defined(CONFIG_MBEDTLS_SHA256_LINKEDSEMI)
+#if defined(CONFIG_MBEDTLS_HARDWARE_SHA224_SHA256_SM3_LINKEDSEMI)
 static mbedtls_threading_mutex_t doneLock;
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 
@@ -173,4 +173,4 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 }
 
 
-#endif /* CONFIG_MBEDTLS_SHA256_LINKEDSEMI */
+#endif /* CONFIG_MBEDTLS_HARDWARE_SHA224_SHA256_SM3_LINKEDSEMI */
