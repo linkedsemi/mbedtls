@@ -28,15 +28,15 @@ int mbedtls_ls_otbn_operation_init(ls_otbn_fireware_t fireware_id);
 // static struct k_sem wait_complete;
 void ls_otbn_mbedtls_update_callback(void (*func)(void*),void *param);
 
-static void mbedtls_ls_otbn_sha256_handler()
-{
-    if (LSOTBN->INTR_STATE)
-    {
-        LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
-        // k_sem_give(&wait_complete);
+// static void mbedtls_ls_otbn_sha256_handler()
+// {
+//     if (LSOTBN->INTR_STATE)
+//     {
+//         LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
+//         // k_sem_give(&wait_complete);
 
-    }
-}
+//     }
+// }
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT)

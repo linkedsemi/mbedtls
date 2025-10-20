@@ -1,7 +1,7 @@
 #include <zephyr/kernel.h>
 #include "../include/mbedtls/threading.h"
 
-#if defined(CONFIG_SOC_LSQSH)||defined(CONFIG_SOC_LS1010)
+#if defined(CONFIG_MBEDTLS_THREADING_LINKEDSEMI_ALT)
 static void zephyr_mbedtls_mutex_init(mbedtls_threading_mutex_t *mutex)
 {
     k_mutex_init(&mutex->k_mtx);
