@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "mbedtls/private_access.h"
 
-#if defined(CONFIG_MBEDTLS_SM4_LINKEDSEMI)
+#if defined(CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT)
 
 #define SM4_IV_SIZE 16
 
@@ -25,6 +25,6 @@ int mbedtls_sm4_ecb_decrypt(mbedtls_sm4_context *ctx, unsigned char* output, con
 
 int mbedtls_sm4_ctr_crypto(mbedtls_sm4_context *ctx, unsigned char* output, const unsigned char* input, size_t ilen);
 
-#endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI */
+#endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT */
 
 #endif /* SM4_ALT_H */

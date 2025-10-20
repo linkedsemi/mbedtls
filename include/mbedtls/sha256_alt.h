@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include "mbedtls/private_access.h"
 
-#if defined(CONFIG_MBEDTLS_HARDWARE_SHA224_SHA256_SM3_LINKEDSEMI)
+#if defined(MBEDTLS_SHA256_ALT)
 typedef struct mbedtls_sha256_context {
     bool start_calc_symbol;
 }
@@ -67,6 +67,6 @@ int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
  */
 void mbedtls_sm3_free(mbedtls_sha256_context *ctx);
 
-#endif /* CONFIG_MBEDTLS_HARDWARE_SHA224_SHA256_SM3_LINKEDSEMI */
+#endif /* CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT */
 
 #endif /* sha256_alt.h */

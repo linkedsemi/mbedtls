@@ -8,7 +8,7 @@
     #endif
 #endif
 
-#if defined(CONFIG_MBEDTLS_SM4_LINKEDSEMI)
+#if defined(CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT)
 
 #include <ls_hal_sm4.h>
 
@@ -66,4 +66,4 @@ int mbedtls_sm4_ctr_crypto(mbedtls_sm4_context *ctx, unsigned char* output, cons
     return 0;
 }
 
-#endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI */
+#endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT */
