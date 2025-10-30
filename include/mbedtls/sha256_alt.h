@@ -1,6 +1,7 @@
 #ifndef SHA256_ALT_H
 #define SHA256_ALT_H
 #include <stdint.h>
+#include <stdbool.h>
 #include "mbedtls/private_access.h"
 
 #if defined(MBEDTLS_SHA256_ALT)
@@ -67,6 +68,26 @@ int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
  */
 void mbedtls_sm3_free(mbedtls_sha256_context *ctx);
 
-#endif /* CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT */
+void mbedtls_sha256_init_dma(mbedtls_sha256_context *ctx);
+
+int mbedtls_sha256_starts_dma(mbedtls_sha256_context *ctx, int is224);
+
+int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
+                          const unsigned char *input, size_t ilen);
+
+int mbedtls_sha256_finish_dma(mbedtls_sha256_context *ctx,
+                          unsigned char *output);
+
+void mbedtls_sm3_init_dma(mbedtls_sha256_context *ctx);
+
+int mbedtls_sm3_starts_dma(mbedtls_sha256_context *ctx);
+
+int mbedtls_sm3_update_dma(mbedtls_sha256_context *ctx,
+                        const unsigned char *input,
+                          size_t ilen);
+
+int mbedtls_sm3_finish_dma(mbedtls_sha256_context *ctx,
+                          unsigned char *output);
+#endif
 
 #endif /* sha256_alt.h */
