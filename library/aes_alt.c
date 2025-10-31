@@ -5,6 +5,7 @@
 #include <ls_hal_crypt.h>
 #include "mbedtls/error.h"
 #include "common.h"
+#include "ctr.h"
 #if CONFIG_SOC_LSQSH
     #if CONFIG_AES_CLOCK_RESET
         #include "reg_sysc_sec_cpu.h"
@@ -243,7 +244,42 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           const unsigned char *input,
                           unsigned char *output)
 {
-    return HAL_LSCRYPT_AES_CTR_Crypt(nonce_counter, (uint8_t*)input, length, (uint8_t*)output);
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+
+    size_t offset = *nc_off;
+
+    if (offset > 0x0F) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    for (size_t i = 0; i < length;) {
+        size_t n = 16;
+        if (offset == 0) {
+            ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, nonce_counter, stream_block);
+            if (ret != 0) {
+                goto exit;
+            }
+            mbedtls_ctr_increment_counter(nonce_counter);
+        } else {
+            n -= offset;
+        }
+
+        if (n > (length - i)) {
+            n = (length - i);
+        }
+        mbedtls_xor(&output[i], &input[i], &stream_block[offset], n);
+        // offset might be non-zero for the last block, but in that case, we don't use it again
+        offset = 0;
+        i += n;
+    }
+
+    // capture offset for future resumption
+    *nc_off = (*nc_off + length) % 16;
+
+    ret = 0;
+
+exit:
+    return ret;
 }
 
 #if defined(MBEDTLS_CIPHER_MODE_XTS)
