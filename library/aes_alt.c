@@ -44,16 +44,59 @@ int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
     uint8_t keysize = 0;
-    if (keybits == 128)
-        keysize = AES_KEY_128;
-    else if (keybits == 192)
-        keysize = AES_KEY_192;
-    else if (keybits == 256)
-        keysize = AES_KEY_256;
-    else
-        return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
+    uint32_t *word_little_endian = malloc(32);
+    uint32_t *initial_word_little_endian =word_little_endian;
+    uint32_t *word_key = malloc(32);
+    if (word_little_endian == NULL ||word_key == NULL) 
+        return -1;
 
-    return HAL_LSCRYPT_AES_Key_Config((uint32_t *)key, keysize);
+    do{
+        *word_little_endian++ = *(uint32_t*)&key[0];
+        *word_little_endian++ = *(uint32_t*)&key[4];
+        *word_little_endian++ = *(uint32_t*)&key[8];
+        *word_little_endian++ = *(uint32_t*)&key[12];
+        if(keybits == 128) 
+        {
+            word_key[0] = __builtin_bswap32(initial_word_little_endian[3]);
+            word_key[1] = __builtin_bswap32(initial_word_little_endian[2]);
+            word_key[2] = __builtin_bswap32(initial_word_little_endian[1]);
+            word_key[3] = __builtin_bswap32(initial_word_little_endian[0]);
+            keysize = AES_KEY_128;
+            break;
+        }
+
+        *word_little_endian++ = *(uint32_t*)&key[16];
+        *word_little_endian++ = *(uint32_t*)&key[20];
+        if(keybits == 192)
+        {
+            word_key[0] = __builtin_bswap32(initial_word_little_endian[5]);
+            word_key[1] = __builtin_bswap32(initial_word_little_endian[4]);
+            word_key[2] = __builtin_bswap32(initial_word_little_endian[3]);
+            word_key[3] = __builtin_bswap32(initial_word_little_endian[2]);
+            word_key[4] = __builtin_bswap32(initial_word_little_endian[1]);
+            word_key[5] = __builtin_bswap32(initial_word_little_endian[0]);
+            keysize = AES_KEY_192;
+            break;
+        }
+
+        *word_little_endian++ = *(uint32_t*)&key[24];
+        *word_little_endian = *(uint32_t*)&key[28];
+        if(keybits == 256)
+        {
+            word_key[0] = __builtin_bswap32(initial_word_little_endian[7]);
+            word_key[1] = __builtin_bswap32(initial_word_little_endian[6]);
+            word_key[2] = __builtin_bswap32(initial_word_little_endian[5]);
+            word_key[3] = __builtin_bswap32(initial_word_little_endian[4]);
+            word_key[4] = __builtin_bswap32(initial_word_little_endian[3]);
+            word_key[5] = __builtin_bswap32(initial_word_little_endian[2]);
+            word_key[6] = __builtin_bswap32(initial_word_little_endian[1]);
+            word_key[7] = __builtin_bswap32(initial_word_little_endian[0]);
+            keysize = AES_KEY_256;
+            break;
+        }
+    }while(0);
+
+    return HAL_LSCRYPT_AES_Key_Config(word_key, keysize);
 }
 
 int mbedtls_aes_setkey_dec(mbedtls_aes_context *ctx, const unsigned char *key,
@@ -93,7 +136,23 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    HAL_LSCRYPT_SET_IV((uint32_t *)iv);
+    uint32_t *word_little_endian = malloc(16);
+    uint32_t *initial_word_little_endian = word_little_endian;
+    uint32_t *word_iv = malloc(16);
+    if (word_little_endian == NULL || word_iv == NULL)
+        return -1;
+ 
+    *word_little_endian++ = *(uint32_t*)&iv[0];
+    *word_little_endian++ = *(uint32_t*)&iv[4];
+    *word_little_endian++ = *(uint32_t*)&iv[8];
+    *word_little_endian = *(uint32_t*)&iv[12];
+ 
+    word_iv[0] = __builtin_bswap32(initial_word_little_endian[3]);
+    word_iv[1] = __builtin_bswap32(initial_word_little_endian[2]);
+    word_iv[2] = __builtin_bswap32(initial_word_little_endian[1]);
+    word_iv[3] = __builtin_bswap32(initial_word_little_endian[0]);
+
+    HAL_LSCRYPT_SET_IV(word_iv);
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
