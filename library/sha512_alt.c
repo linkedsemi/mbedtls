@@ -125,6 +125,8 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 
+#if defined(CONFIG_MEBDTLS_ECDSA_LINKEDSEMI_DELEGATION_SERVER)
+
 static mbedtls_sha512_context* ls_sha_ctx = NULL;
 
 void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
@@ -244,5 +246,34 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
     return 0;
 }
 
+#else
+
+void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
+{
+}
+
+void mbedtls_sha512_free(mbedtls_sha512_context *ctx)
+{
+}
+
+int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
+{
+    return 0;
+}
+
+int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
+                          const unsigned char *input,
+                          size_t ilen)
+{
+    return 0;
+}
+
+int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
+                          unsigned char *output)
+{
+    return 0;
+}
+
+#endif /*CONFIG_MEBDTLS_ECDSA_LINKEDSEMI_DELEGATION_SERVER*/
 
 #endif /* CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_OTBN_ALT */

@@ -161,6 +161,7 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 
 #if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
 
+#if defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_SERVER)
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 
@@ -350,6 +351,64 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
     return ret;
 }
 
+#else
+
+void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
+{
+}
+
+int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
+{
+    return 0;
+}
+
+int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
+                          const unsigned char *input,
+                          size_t ilen)
+{
+    return 0;
+}
+
+void reversion_sm3_hash(uint8_t *input,uint8_t *output)
+{
+}
+
+int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
+                          unsigned char *output)
+{
+    return 0;
+}
+
+void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
+{
+}
+
+void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
+{
+}
+
+void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
+{
+}
+
+int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
+{
+    return 0;
+}
+
+int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
+                          const unsigned char *input,
+                          size_t ilen)
+{
+    return 0;
+}
+
+int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
+                          unsigned char *output)
+{
+    return 0;
+}
+#endif
 
 #endif /* CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT */
 
