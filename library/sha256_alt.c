@@ -161,7 +161,7 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 
 #if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
 
-#if defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_SERVER)
+#if !defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 

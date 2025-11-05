@@ -125,7 +125,7 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 
-#if defined(CONFIG_MEBDTLS_ECDSA_LINKEDSEMI_DELEGATION_SERVER)
+#if !defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 
 static mbedtls_sha512_context* ls_sha_ctx = NULL;
 
