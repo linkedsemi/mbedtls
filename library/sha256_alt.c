@@ -575,8 +575,8 @@ static void dma_conf(uint32_t source_address, uint32_t dest_address, size_t ilen
     dma_cfg.channel_priority    = 0;
     dma_cfg.source_data_size    = 4;
     dma_cfg.dest_data_size      = 4;
-    dma_cfg.source_burst_length = 0;
-    dma_cfg.dest_burst_length   = 0;
+    dma_cfg.source_burst_length = 8;
+    dma_cfg.dest_burst_length   = 8;
     dma_cfg.block_count         = 1;
     dma_cfg.head_block          = &blk;
     dma_cfg.user_data           = NULL;
