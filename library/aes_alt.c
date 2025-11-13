@@ -7,9 +7,8 @@
 #include "common.h"
 #include "ctr.h"
 #if CONFIG_SOC_LSQSH
-    #if CONFIG_AES_CLOCK_RESET
-        #include "reg_sysc_sec_cpu.h"
-    #endif
+    #include "field_manipulate.h"
+    #include "reg_crypt_type.h"
 #endif
 
 #if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
@@ -20,13 +19,6 @@ void mbedtls_aes_init(mbedtls_aes_context *ctx)
     memset(ctx, 0, sizeof(mbedtls_aes_context));
 #if CONFIG_SOC_LS1010
     HAL_LSCRYPT_Init();
-#elif CONFIG_SOC_LSQSH
-    #if CONFIG_AES_CLOCK_RESET
-        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CRYPT_MASK;
-        SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CRYPT_MASK;
-        SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CRYPT_MASK;
-        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CRYPT_MASK;
-    #endif
 #endif
 }
 
@@ -40,63 +32,68 @@ void mbedtls_aes_free(mbedtls_aes_context *ctx)
     HAL_LSCRYPT_DeInit();
 }
 
+static void aes_config(bool iv_en, bool enc, bool ie, bool dmaen, bool fifoen, uint8_t type, uint8_t mode)
+{
+    MODIFY_REG(LSCRYPT->CR,CRYPT_CRYSEL_MASK|CRYPT_DMAEN_MASK|CRYPT_FIFOODR_MASK|CRYPT_FIFOEN_MASK|CRYPT_TYPE_MASK|CRYPT_IE_MASK|CRYPT_IVREN_MASK|CRYPT_MODE_MASK|CRYPT_ENCS_MASK,
+        0<<CRYPT_CRYSEL_POS|(dmaen?1:0)<<CRYPT_DMAEN_POS|(fifoen?1:0)<<CRYPT_FIFOODR_POS|(fifoen?1:0)<<CRYPT_FIFOEN_POS|type<<CRYPT_TYPE_POS|(ie?1:0)<<CRYPT_IE_POS|(iv_en?1:0)<<CRYPT_IVREN_POS|mode<<CRYPT_MODE_POS|(enc?1:0)<<CRYPT_ENCS_POS);
+}
+
 int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
     uint8_t keysize = 0;
-    uint32_t *word_little_endian = malloc(32);
-    uint32_t *initial_word_little_endian =word_little_endian;
-    uint32_t *word_key = malloc(32);
-    if (word_little_endian == NULL ||word_key == NULL) 
+    uint32_t *u32_key = (uint32_t *)key;
+    uint32_t *ending_u32_key = malloc(32);
+    uint32_t *initial_key = ending_u32_key;
+
+    if (ending_u32_key == NULL) 
         return -1;
 
     do{
-        *word_little_endian++ = *(uint32_t*)&key[0];
-        *word_little_endian++ = *(uint32_t*)&key[4];
-        *word_little_endian++ = *(uint32_t*)&key[8];
-        *word_little_endian++ = *(uint32_t*)&key[12];
-        if(keybits == 128) 
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
+        if(keybits == 128)
         {
-            word_key[0] = __builtin_bswap32(initial_word_little_endian[3]);
-            word_key[1] = __builtin_bswap32(initial_word_little_endian[2]);
-            word_key[2] = __builtin_bswap32(initial_word_little_endian[1]);
-            word_key[3] = __builtin_bswap32(initial_word_little_endian[0]);
             keysize = AES_KEY_128;
+            LSCRYPT->KEY3 = *initial_key++;
+            LSCRYPT->KEY2 = *initial_key++;
+            LSCRYPT->KEY1 = *initial_key++;
+            LSCRYPT->KEY0 = *initial_key++;
             break;
         }
-
-        *word_little_endian++ = *(uint32_t*)&key[16];
-        *word_little_endian++ = *(uint32_t*)&key[20];
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
         if(keybits == 192)
         {
-            word_key[0] = __builtin_bswap32(initial_word_little_endian[5]);
-            word_key[1] = __builtin_bswap32(initial_word_little_endian[4]);
-            word_key[2] = __builtin_bswap32(initial_word_little_endian[3]);
-            word_key[3] = __builtin_bswap32(initial_word_little_endian[2]);
-            word_key[4] = __builtin_bswap32(initial_word_little_endian[1]);
-            word_key[5] = __builtin_bswap32(initial_word_little_endian[0]);
             keysize = AES_KEY_192;
+            LSCRYPT->KEY5 = *initial_key++;
+            LSCRYPT->KEY4 = *initial_key++;
+            LSCRYPT->KEY3 = *initial_key++;
+            LSCRYPT->KEY2 = *initial_key++;
+            LSCRYPT->KEY1 = *initial_key++;
+            LSCRYPT->KEY0 = *initial_key++;
             break;
         }
-
-        *word_little_endian++ = *(uint32_t*)&key[24];
-        *word_little_endian = *(uint32_t*)&key[28];
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
+        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
         if(keybits == 256)
         {
-            word_key[0] = __builtin_bswap32(initial_word_little_endian[7]);
-            word_key[1] = __builtin_bswap32(initial_word_little_endian[6]);
-            word_key[2] = __builtin_bswap32(initial_word_little_endian[5]);
-            word_key[3] = __builtin_bswap32(initial_word_little_endian[4]);
-            word_key[4] = __builtin_bswap32(initial_word_little_endian[3]);
-            word_key[5] = __builtin_bswap32(initial_word_little_endian[2]);
-            word_key[6] = __builtin_bswap32(initial_word_little_endian[1]);
-            word_key[7] = __builtin_bswap32(initial_word_little_endian[0]);
             keysize = AES_KEY_256;
+            LSCRYPT->KEY7 = *initial_key++;
+            LSCRYPT->KEY6 = *initial_key++;
+            LSCRYPT->KEY5 = *initial_key++;
+            LSCRYPT->KEY4 = *initial_key++;
+            LSCRYPT->KEY3 = *initial_key++;
+            LSCRYPT->KEY2 = *initial_key++;
+            LSCRYPT->KEY1 = *initial_key++;
+            LSCRYPT->KEY0 = *initial_key++;
             break;
         }
     }while(0);
-
-    return HAL_LSCRYPT_AES_Key_Config(word_key, keysize);
+    REG_FIELD_WR(LSCRYPT->CR,CRYPT_AESKS,keysize);
+    return 0;
 }
 
 int mbedtls_aes_setkey_dec(mbedtls_aes_context *ctx, const unsigned char *key,
@@ -114,15 +111,28 @@ int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    uint32_t length = AES_BLOCK_SIZE;
+    uint32_t *in = (uint32_t *)input;
+    uint32_t *out = (uint32_t *)output;
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
-        return HAL_LSCRYPT_AES_ECB_Encrypt(input, length, output, &length);
+        aes_config(false, true, false, false, false, 0x2, 0x0);
     }else{
-        return HAL_LSCRYPT_AES_ECB_Decrypt(input, length, output, &length);
+        aes_config(false, false, false, false, false, 0x2, 0x0);
     }
 
+    LSCRYPT->DATA3 = *in++;
+    LSCRYPT->DATA2 = *in++;
+    LSCRYPT->DATA1 = *in++;
+    LSCRYPT->DATA0 = *in++;
+    REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
+    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+    LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+    *out++ = LSCRYPT->RES3;
+    *out++ = LSCRYPT->RES2;
+    *out++ = LSCRYPT->RES1;
+    *out++ = LSCRYPT->RES0;
+    return 0;
 }
 
 int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
@@ -136,31 +146,64 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    uint32_t *word_little_endian = malloc(16);
-    uint32_t *initial_word_little_endian = word_little_endian;
-    uint32_t *word_iv = malloc(16);
-    if (word_little_endian == NULL || word_iv == NULL)
-        return -1;
- 
-    *word_little_endian++ = *(uint32_t*)&iv[0];
-    *word_little_endian++ = *(uint32_t*)&iv[4];
-    *word_little_endian++ = *(uint32_t*)&iv[8];
-    *word_little_endian = *(uint32_t*)&iv[12];
- 
-    word_iv[0] = __builtin_bswap32(initial_word_little_endian[3]);
-    word_iv[1] = __builtin_bswap32(initial_word_little_endian[2]);
-    word_iv[2] = __builtin_bswap32(initial_word_little_endian[1]);
-    word_iv[3] = __builtin_bswap32(initial_word_little_endian[0]);
+    __ASSERT_NO_MSG(length % 16 == 0);
 
-    HAL_LSCRYPT_SET_IV(word_iv);
+    const unsigned char * end_addr = input + length;
+    uint32_t *in = (uint32_t *)input;
+    uint32_t *out = (uint32_t *)output;
+
+    uint32_t *u32_iv = (uint32_t *)iv;
+    uint32_t *ending_u32_iv = malloc(32);
+    uint32_t *initial_iv = ending_u32_iv;
+    
+    if (ending_u32_iv == NULL) 
+        return -1;
+
+    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
+    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
+    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
+    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
+
+    LSCRYPT->IVR3 = *initial_iv++;
+    LSCRYPT->IVR2 = *initial_iv++;
+    LSCRYPT->IVR1 = *initial_iv++;
+    LSCRYPT->IVR0 = *initial_iv++;
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
-        return HAL_LSCRYPT_AES_CBC_Encrypt(input, length, output, &length);
+        aes_config(true, true, false, false, false, 0x0, 0x1);
     }else{
-        return HAL_LSCRYPT_AES_CBC_Decrypt(input, length, output, &length);
+        aes_config(true, false, false, false, false, 0x0, 0x1);
     }
 
+    LSCRYPT->DATA3 = __builtin_bswap32(*in++);
+    LSCRYPT->DATA2 = __builtin_bswap32(*in++);
+    LSCRYPT->DATA1 = __builtin_bswap32(*in++);
+    LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+    REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
+    while(in < (uint32_t*)end_addr)
+    {
+        LSCRYPT->DATA3 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA2 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA1 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+        LSCRYPT->CR &= ~CRYPT_IVREN_MASK;
+        LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+        *out++ = __builtin_bswap32(LSCRYPT->RES3);
+        *out++ = __builtin_bswap32(LSCRYPT->RES2);
+        *out++ = __builtin_bswap32(LSCRYPT->RES1);
+        *out++ = __builtin_bswap32(LSCRYPT->RES0);
+
+        REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
+    }
+    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+    LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+    *out++ = __builtin_bswap32(LSCRYPT->RES3);
+    *out++ = __builtin_bswap32(LSCRYPT->RES2);
+    *out++ = __builtin_bswap32(LSCRYPT->RES1);
+    *out++ = __builtin_bswap32(LSCRYPT->RES0);
+    return 0;
 }
 
 int mbedtls_aes_crypt_cfb128(mbedtls_aes_context *ctx,
@@ -303,42 +346,41 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           const unsigned char *input,
                           unsigned char *output)
 {
-    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    const unsigned char * end_addr = input + length;
+    uint32_t *in = (uint32_t *)input;
+    uint32_t *out = (uint32_t *)output;
 
-    size_t offset = *nc_off;
+    uint32_t *u32_counter = (uint32_t *)nonce_counter;
+    uint32_t *ending_u32_counter = malloc(32);
+    uint32_t *initial_counter = ending_u32_counter;
 
-    if (offset > 0x0F) {
-        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    aes_config(false, true, false, false, false, 0x0, 0x2);
+
+    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
+    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
+    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
+    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
+
+    LSCRYPT->IVR3 = *initial_counter++;
+    LSCRYPT->IVR2 = *initial_counter++;
+    LSCRYPT->IVR1 = *initial_counter++;
+    LSCRYPT->IVR0 = *initial_counter++;
+
+    while (in < (uint32_t*)end_addr)
+    {
+        LSCRYPT->DATA3 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA2 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA1 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+        REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
+        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+        LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+        *out++ = __builtin_bswap32(LSCRYPT->RES3);
+        *out++ = __builtin_bswap32(LSCRYPT->RES2);
+        *out++ = __builtin_bswap32(LSCRYPT->RES1);
+        *out++ = __builtin_bswap32(LSCRYPT->RES0);
     }
-
-    for (size_t i = 0; i < length;) {
-        size_t n = 16;
-        if (offset == 0) {
-            ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, nonce_counter, stream_block);
-            if (ret != 0) {
-                goto exit;
-            }
-            mbedtls_ctr_increment_counter(nonce_counter);
-        } else {
-            n -= offset;
-        }
-
-        if (n > (length - i)) {
-            n = (length - i);
-        }
-        mbedtls_xor(&output[i], &input[i], &stream_block[offset], n);
-        // offset might be non-zero for the last block, but in that case, we don't use it again
-        offset = 0;
-        i += n;
-    }
-
-    // capture offset for future resumption
-    *nc_off = (*nc_off + length) % 16;
-
-    ret = 0;
-
-exit:
-    return ret;
+    return 0;
 }
 
 #if defined(MBEDTLS_CIPHER_MODE_XTS)
