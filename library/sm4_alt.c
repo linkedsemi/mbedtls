@@ -3,18 +3,10 @@
 #include "mbedtls/sm4_alt.h"
 
 #if CONFIG_SOC_LSQSH
-    #if CONFIG_SM4_CLOCK_RESET
-        #include "reg_sysc_sec_cpu.h"
-    #endif
     #include "ls_msp_sm4.h"
     #include "field_manipulate.h"
     #include "reg_sm4_type.h"
-#include <ls_soc_gpio.h>
-#include <zephyr/cache.h>
-#include "platform.h"
-
-
-
+    #include <zephyr/cache.h>
 #endif
 
 #if defined(CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT)
@@ -27,13 +19,6 @@ void mbedtls_sm4_init(mbedtls_sm4_context *ctx)
 {
 #if CONFIG_SOC_LS1010
     HAL_SM4_Init();
-// #elif CONFIG_SOC_LSQSH
-//     #if CONFIG_SM4_CLOCK_RESET
-//         SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SM4_MASK;
-//         SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CALC_SM4_MASK;
-//         SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CALC_SM4_MASK;
-//         SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CALC_SM4_MASK;
-//     #endif
 #endif
 }
 
