@@ -12,7 +12,6 @@
  * SEC1 https://www.secg.org/sec1-v2.pdf
  */
 #if !defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
-
 #include "common.h"
 
 #if defined(MBEDTLS_ECDSA_C)
