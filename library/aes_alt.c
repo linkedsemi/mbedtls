@@ -176,17 +176,13 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         aes_config(true, false, false, false, false, 0x0, 0x1);
     }
 
-    LSCRYPT->DATA3 = __builtin_bswap32(*in++);
-    LSCRYPT->DATA2 = __builtin_bswap32(*in++);
-    LSCRYPT->DATA1 = __builtin_bswap32(*in++);
-    LSCRYPT->DATA0 = __builtin_bswap32(*in++);
-    REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
     while(in < (uint32_t*)end_addr)
     {
         LSCRYPT->DATA3 = __builtin_bswap32(*in++);
         LSCRYPT->DATA2 = __builtin_bswap32(*in++);
         LSCRYPT->DATA1 = __builtin_bswap32(*in++);
         LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+        REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
         while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
         LSCRYPT->CR &= ~CRYPT_IVREN_MASK;
         LSCRYPT->ICFR = CRYPT_AESIF_MASK;
@@ -194,15 +190,7 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         *out++ = __builtin_bswap32(LSCRYPT->RES2);
         *out++ = __builtin_bswap32(LSCRYPT->RES1);
         *out++ = __builtin_bswap32(LSCRYPT->RES0);
-
-        REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
     }
-    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
-    LSCRYPT->ICFR = CRYPT_AESIF_MASK;
-    *out++ = __builtin_bswap32(LSCRYPT->RES3);
-    *out++ = __builtin_bswap32(LSCRYPT->RES2);
-    *out++ = __builtin_bswap32(LSCRYPT->RES1);
-    *out++ = __builtin_bswap32(LSCRYPT->RES0);
     return 0;
 }
 
