@@ -44,7 +44,7 @@
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(mbedtls,CONFIG_MBEDTLS_LOG_LEVEL);
-
+#define MAX_ECC_CURVE_SIZE   64
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 #define ASSERT_MBEDTLS(error) {if(error){__ASSERT_PRINT("mbedtls :stack is too small\n"); err = MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL; goto exit;}}
 
@@ -63,6 +63,26 @@ static void otbn_ecdsa_callback(void *param)
 
 }
 
+bool ecc_random_check(uint8_t *in, uint32_t size)
+{
+    uint8_t zero_cnt = 0;
+    size -= 1;
+    while(size--)
+    {
+        if(in[size] == 0)
+        {
+            zero_cnt++;
+        }else
+        {
+            zero_cnt = 0;
+        }
+        if(zero_cnt > 3)
+        {
+            return false;
+        }
+    }
+    return true;
+}
 
 void reverse_buf(const uint8_t *input, uint8_t *output,uint16_t input_len, uint16_t output_len)
 {
@@ -100,8 +120,8 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
 {
     int err = 0;
     uint32_t mode = LS_OTBN_MODE_SIGN;
-    uint8_t otbn_msg[100];
-    uint8_t cc_buf[100];
+    uint8_t otbn_msg[MAX_ECC_CURVE_SIZE];
+    uint8_t cc_buf[MAX_ECC_CURVE_SIZE];
     size_t n_size = (grp->nbits + 7) / 8;
     size_t use_size = blen > n_size ? n_size : blen;
     ecc_remote_addr otbn_curve_info;
@@ -124,18 +144,24 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
         goto exit;
     }
-    f_rng(p_rng,cc_buf,use_size);
-    if(use_size > 3 && cc_buf[0] == 0 && cc_buf[1] == 0 && cc_buf[2] == 0)
+
+    uint16_t size_align = 0;
+    if(otbn_curve_info.curve_size == 48)
+    {
+        size_align = 64;
+    }else
+    {
+        size_align = otbn_curve_info.curve_size;
+    }
+    f_rng(p_rng,cc_buf,size_align);
+    if(!ecc_random_check(cc_buf,size_align))
     {
         LOG_DBG("mbedtls :trng error\n");
         err = MBEDTLS_ERR_ECP_RANDOM_FAILED;
         goto exit;
     }
-    reverse_buf(cc_buf,cc_buf,use_size,otbn_curve_info.curve_size);
-    if(grp->id == MBEDTLS_ECP_DP_SECP256R1)
-        cc_buf[0] -= 33;
-        
-    if(HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, otbn_curve_info.curve_size))
+    reverse_buf(cc_buf,cc_buf,size_align,size_align);
+    if(HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align))
     {
         LOG_DBG("mbedtls :trng error\n");
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
@@ -194,8 +220,8 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
 {
     int err = 0;
     uint32_t mode = LS_OTBN_MODE_VERIFY;
-    uint8_t cc_buf[100];
-    uint8_t r_x[100];
+    uint8_t cc_buf[MAX_ECC_CURVE_SIZE];
+    uint8_t r_x[MAX_ECC_CURVE_SIZE];
     size_t n_size = (grp->nbits + 7) / 8;
     size_t use_size = blen > n_size ? n_size : blen;
     ecc_remote_addr otbn_curve_info;
@@ -280,7 +306,7 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
 {
     int err = 0;
     uint32_t mode = LS_OTBN_MODE_KEYGEN;
-    uint8_t cc_buf[100];
+    uint8_t cc_buf[MAX_ECC_CURVE_SIZE];
     // size_t n_size = (ctx->grp.nbits + 7) / 8;
     ecc_remote_addr otbn_curve_info;
 
@@ -319,13 +345,13 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     }
     f_rng(p_rng,cc_buf,size_align);
 
-    if(size_align > 3 && cc_buf[0] == 0 && cc_buf[1] == 0 && cc_buf[2] == 0)
+    if(!ecc_random_check(cc_buf,size_align))
     {
-        LOG_DBG("trng error\n");
+        LOG_DBG("mbedtls :trng error\n");
         err = MBEDTLS_ERR_ECP_RANDOM_FAILED;
         goto exit;
     }
-
+    reverse_buf(cc_buf,cc_buf,size_align,size_align);
     err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align);
     if(err != 0)
     {
