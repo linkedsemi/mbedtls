@@ -5,7 +5,7 @@
 #include "mbedtls/error.h"
 #include "../include/mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
-
+#include "mbedtls_otbn_hash.h"
 #if CONFIG_SOC_LSQSH
     #if CONFIG_SHA256_CLOCK_RESET
         #include "reg_sysc_sec_cpu.h"
@@ -28,14 +28,9 @@ int mbedtls_ls_otbn_operation_init(ls_otbn_fireware_t fireware_id);
 // static struct k_sem wait_complete;
 void ls_otbn_mbedtls_update_callback(void (*func)(void*),void *param);
 
-// static void mbedtls_ls_otbn_sha256_handler()
+// static void mbedtls_ls_otbn_hash_handler()
 // {
-//     if (LSOTBN->INTR_STATE)
-//     {
-//         LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
-//         // k_sem_give(&wait_complete);
 
-//     }
 // }
 #endif
 
@@ -179,7 +174,7 @@ int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
-    HAL_OTBN_SM3_Init();
+    ls_otbn_sm3_init_for_rtos();
 
     return 0;
 }
@@ -201,7 +196,7 @@ int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
     }
     assert(ls_sha_ctx == ctx);
 
-    HAL_OTBN_SM3_Update((uint8_t *)input, ilen);
+    ls_otbn_sm3_update_for_rtos((uint8_t *)input, ilen);
 
     return ret;
 }
@@ -230,7 +225,7 @@ int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
 
-    HAL_OTBN_SM3_Final(output);
+    ls_otbn_sm3_final_for_rtos(output);
     reversion_sm3_hash(output,output);
     key = irq_lock();
 
@@ -297,7 +292,7 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
         {
             return MBEDTLS_ERR_LS_OTBN_BUSY;
         }
-        HAL_OTBN_SHA256_Init();
+        ls_otbn_sha256_init_for_rtos();
     }
 
     return 0;
@@ -321,7 +316,7 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
     }
     assert(ls_sha_ctx == ctx);
 
-    HAL_OTBN_SHA256_Update((uint8_t *)input, ilen);
+    ls_otbn_sha256_update_for_rtos((uint8_t *)input, ilen);
 
     return ret;
 }
@@ -337,8 +332,8 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
 
-    // ls_otbn_mbedtls_update_callback(mbedtls_ls_otbn_sha256_handler,NULL);
-    HAL_OTBN_SHA256_Final(output);
+    // ls_otbn_mbedtls_update_callback(mbedtls_ls_otbn_hash_handler,NULL);
+    ls_otbn_sha256_final_for_rtos(output);
 
     key = irq_lock();
 

@@ -4,11 +4,13 @@
 #include "../include/mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
 #include "stdio.h"
+
 #if CONFIG_SHA512_CLOCK_RESET
 #include "reg_sysc_sec_cpu.h"
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_OTBN_ALT)
+#include "mbedtls_otbn_hash.h"
 #include "ls_hal_otbn_sha.h"
 #include "ls_hal_otbn.h"
 #include "ls_msp_otbn.h"
@@ -171,11 +173,11 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     if (is384) 
     {
         ctx->is384 = true;
-        HAL_OTBN_SHA384_Init(); // otbn init
+        ls_otbn_sha384_init_for_rtos(); // otbn init
 
     } else {
         ctx->is384 = false;
-        HAL_OTBN_SHA512_Init(); // otbn init
+        ls_otbn_sha512_init_for_rtos(); // otbn init
 
     }
 
@@ -203,11 +205,11 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
 #if defined(MBEDTLS_SHA384_C)
     if(ctx->is384)
     {
-        HAL_OTBN_SHA384_Update((uint8_t *)input, ilen);
+        ls_otbn_sha384_update_for_rtos((uint8_t *)input, ilen);
     }else
 #endif //MBEDTLS_SHA384_C
     {
-        HAL_OTBN_SHA512_Update((uint8_t *)input, ilen);
+        ls_otbn_sha512_update_for_rtos((uint8_t *)input, ilen);
     }
     return 0;
 }
@@ -226,11 +228,11 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 #if defined(MBEDTLS_SHA384_C)
     if(ctx->is384)
     {
-        HAL_OTBN_SHA384_Final(output);
+        ls_otbn_sha384_final_for_rtos(output);
     }else
 #endif //MBEDTLS_SHA384_C
     {
-        HAL_OTBN_SHA512_Final(output);
+        ls_otbn_sha512_final_for_rtos(output);
     }
 
     /* The hash algorithm on the OTBN is currently executed using the blocking method only. */

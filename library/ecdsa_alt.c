@@ -48,9 +48,7 @@ LOG_MODULE_DECLARE(mbedtls,CONFIG_MBEDTLS_LOG_LEVEL);
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 #define ASSERT_MBEDTLS(error) {if(error){__ASSERT_PRINT("mbedtls :stack is too small\n"); err = MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL; goto exit;}}
 
-static struct k_sem wait_complete;
-static bool sem_initailed = false;
-extern struct k_mutex mbedtls_otbn_doneLock;
+extern void ls_otbn_cmd(enum HAL_OTBN_CMD cmd);
 void mbedtls_ls_otbn_moudle_init(void);
 void mbedtls_ls_otbn_moudle_deinit(void);
 void mbedtls_ls_otbn_threading_release(void);
@@ -62,22 +60,9 @@ int get_curve_otbn_info(ls_otbn_fireware_t curve, ecc_remote_addr *info);
 
 static void otbn_ecdsa_callback(void *param)
 {
-    if (LSOTBN->INTR_STATE)
-    {
-        LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
-        k_sem_give(&wait_complete);
 
-    }
 }
 
-void ls_otbn_cmd(enum HAL_OTBN_CMD cmd)
-{
-    if (LSOTBN->INTR_STATE)
-        LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
-    LSOTBN->INTR_ENABLE = OTBN_INTR_ENABLE_EN_MASK;
-    LSOTBN->CMD = cmd;
-    (void)k_sem_take(&wait_complete, K_FOREVER);
-}
 
 void reverse_buf(const uint8_t *input, uint8_t *output,uint16_t input_len, uint16_t output_len)
 {
@@ -96,23 +81,15 @@ void reverse_buf(const uint8_t *input, uint8_t *output,uint16_t input_len, uint1
 
 int mbedtls_ls_otbn_ecdsa_init(ls_otbn_fireware_t curve)
 {
-    if(!sem_initailed)
-    {
-        k_sem_init(&wait_complete,0,1);
-        sem_initailed = true;
-    }
     return mbedtls_ls_otbn_operation_init(curve);
 }
 
 void mbedtls_ls_otbn_ecdsa_deinit(void)
 {
-    static uint16_t output_count = 0;
     unsigned int key;
     key = irq_lock();
     mbedtls_ls_otbn_moudle_deinit();
     mbedtls_ls_otbn_threading_release();
-    output_count++;
-    k_sem_reset(&wait_complete);
     irq_unlock(key);
 }
 
@@ -332,17 +309,24 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
         goto exit;
     }
+    uint16_t size_align = 0;
+    if(otbn_curve_info.curve_size == 48)
+    {
+        size_align = 64;
+    }else
+    {
+        size_align = otbn_curve_info.curve_size;
+    }
+    f_rng(p_rng,cc_buf,size_align);
 
-    f_rng(p_rng,cc_buf,otbn_curve_info.curve_size);
-
-    if(otbn_curve_info.curve_size > 3 && cc_buf[0] == 0 && cc_buf[1] == 0 && cc_buf[2] == 0)
+    if(size_align > 3 && cc_buf[0] == 0 && cc_buf[1] == 0 && cc_buf[2] == 0)
     {
         LOG_DBG("trng error\n");
         err = MBEDTLS_ERR_ECP_RANDOM_FAILED;
         goto exit;
     }
-    // reverse_buf(cc_buf,cc_buf,otbn_curve_info.curve_size,otbn_curve_info.curve_size);
-    err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, 32);//随机数种子宽度：32
+
+    err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align);
     if(err != 0)
     {
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
