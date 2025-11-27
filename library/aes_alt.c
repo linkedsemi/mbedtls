@@ -43,52 +43,39 @@ int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
 {
     uint8_t keysize = 0;
     uint32_t *u32_key = (uint32_t *)key;
-    uint32_t *ending_u32_key = malloc(32);
-    uint32_t *initial_key = ending_u32_key;
-
-    if (ending_u32_key == NULL) 
-        return -1;
 
     do{
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
         if(keybits == 128)
         {
             keysize = AES_KEY_128;
-            LSCRYPT->KEY3 = *initial_key++;
-            LSCRYPT->KEY2 = *initial_key++;
-            LSCRYPT->KEY1 = *initial_key++;
-            LSCRYPT->KEY0 = *initial_key++;
+            LSCRYPT->KEY3 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY2 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY1 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY0 = __builtin_bswap32(*u32_key++);
             break;
         }
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
         if(keybits == 192)
         {
             keysize = AES_KEY_192;
-            LSCRYPT->KEY5 = *initial_key++;
-            LSCRYPT->KEY4 = *initial_key++;
-            LSCRYPT->KEY3 = *initial_key++;
-            LSCRYPT->KEY2 = *initial_key++;
-            LSCRYPT->KEY1 = *initial_key++;
-            LSCRYPT->KEY0 = *initial_key++;
+            LSCRYPT->KEY5 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY4 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY3 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY2 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY1 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY0 = __builtin_bswap32(*u32_key++);
             break;
         }
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
-        *ending_u32_key++ = __builtin_bswap32(*u32_key++);
         if(keybits == 256)
         {
             keysize = AES_KEY_256;
-            LSCRYPT->KEY7 = *initial_key++;
-            LSCRYPT->KEY6 = *initial_key++;
-            LSCRYPT->KEY5 = *initial_key++;
-            LSCRYPT->KEY4 = *initial_key++;
-            LSCRYPT->KEY3 = *initial_key++;
-            LSCRYPT->KEY2 = *initial_key++;
-            LSCRYPT->KEY1 = *initial_key++;
-            LSCRYPT->KEY0 = *initial_key++;
+            LSCRYPT->KEY7 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY6 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY5 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY4 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY3 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY2 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY1 = __builtin_bswap32(*u32_key++);
+            LSCRYPT->KEY0 = __builtin_bswap32(*u32_key++);
             break;
         }
     }while(0);
@@ -151,23 +138,12 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
     const unsigned char * end_addr = input + length;
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
-
     uint32_t *u32_iv = (uint32_t *)iv;
-    uint32_t *ending_u32_iv = malloc(32);
-    uint32_t *initial_iv = ending_u32_iv;
-    
-    if (ending_u32_iv == NULL) 
-        return -1;
 
-    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
-    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
-    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
-    *ending_u32_iv++ = __builtin_bswap32(*u32_iv++);
-
-    LSCRYPT->IVR3 = *initial_iv++;
-    LSCRYPT->IVR2 = *initial_iv++;
-    LSCRYPT->IVR1 = *initial_iv++;
-    LSCRYPT->IVR0 = *initial_iv++;
+    LSCRYPT->IVR3 = __builtin_bswap32(*u32_iv++);
+    LSCRYPT->IVR2 = __builtin_bswap32(*u32_iv++);
+    LSCRYPT->IVR1 = __builtin_bswap32(*u32_iv++);
+    LSCRYPT->IVR0 = __builtin_bswap32(*u32_iv++);
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
@@ -339,20 +315,13 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
     uint32_t *out = (uint32_t *)output;
 
     uint32_t *u32_counter = (uint32_t *)nonce_counter;
-    uint32_t *ending_u32_counter = malloc(32);
-    uint32_t *initial_counter = ending_u32_counter;
 
     aes_config(false, true, false, false, false, 0x0, 0x2);
 
-    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
-    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
-    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
-    *ending_u32_counter++ = __builtin_bswap32(*u32_counter++);
-
-    LSCRYPT->IVR3 = *initial_counter++;
-    LSCRYPT->IVR2 = *initial_counter++;
-    LSCRYPT->IVR1 = *initial_counter++;
-    LSCRYPT->IVR0 = *initial_counter++;
+    LSCRYPT->IVR3 = __builtin_bswap32(*u32_counter++);
+    LSCRYPT->IVR2 = __builtin_bswap32(*u32_counter++);
+    LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
+    LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
 
     while (in < (uint32_t*)end_addr)
     {
