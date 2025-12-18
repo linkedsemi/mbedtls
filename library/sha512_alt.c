@@ -70,8 +70,6 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
     assert(((uint32_t)addr % 4) == 0);
     csi_dcache_clean_range((uint32_t *)addr, block_number*LS_SHA512_BLOCK_SIZE);
 
-    LS_SHA512->INTR_MSK = SHA512_INTR_CALC_END_MASK;
-
     if (isFirst)
     {
         REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_INIT_CALC, 1);
@@ -83,6 +81,8 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
         REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_INIT_CALC ,0);
         REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_START, 1);
     }
+
+    LS_SHA512->INTR_MSK = SHA512_INTR_CALC_END_MASK;
 
     k_sem_take(&sha384_sha512_sem, K_MSEC(SHA384_SHA512_WAIT_TIMEOUT_MS));
 }
