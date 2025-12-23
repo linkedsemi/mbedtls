@@ -17,9 +17,7 @@
 void mbedtls_aes_init(mbedtls_aes_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_aes_context));
-#if CONFIG_SOC_LS1010
     HAL_LSCRYPT_Init();
-#endif
 }
 
 void mbedtls_aes_free(mbedtls_aes_context *ctx)
