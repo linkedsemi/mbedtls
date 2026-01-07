@@ -69,6 +69,9 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
     LS_SHA512->ADDR = addr;
     assert(((uint32_t)addr % 4) == 0);
     csi_dcache_clean_range((uint32_t *)addr, block_number*LS_SHA512_BLOCK_SIZE);
+    // Hardware requirements include 610 and 810 development boards : 
+    // 1.irq_disable, 2.start, 3.intr_clr, 4.irq_enable, 5.intr_mask
+    irq_disable(SHA512_IRQN);
 
     if (isFirst)
     {
@@ -81,6 +84,10 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
         REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_INIT_CALC ,0);
         REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_START, 1);
     }
+
+    LS_SHA512->INTR_CLR = SHA512_INTR_DMA_END_MASK | SHA512_INTR_CALC_END_MASK;
+
+    irq_enable(SHA512_IRQN);
 
     LS_SHA512->INTR_MSK = SHA512_INTR_CALC_END_MASK;
 
@@ -143,6 +150,10 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
+    if (ilen == 0) {
+        return 0;
+    }
+
     if (!ctx->start_calc_symbol)
     {
         mbedtls_mutex_lock(&doneLock);
