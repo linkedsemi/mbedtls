@@ -9,6 +9,7 @@
 #if CONFIG_SOC_LSQSH
     #include "field_manipulate.h"
     #include "reg_crypt_type.h"
+    #include "reg_sysc_sec_cpu.h"
 #endif
 
 #if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
@@ -17,7 +18,16 @@
 void mbedtls_aes_init(mbedtls_aes_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_aes_context));
-    HAL_LSCRYPT_Init();
+#if CONFIG_SOC_LS1010
+        HAL_LSCRYPT_Init();
+#elif CONFIG_SOC_LSQSH
+    #if CONFIG_AES_CLOCK_RESET
+        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CRYPT_MASK;
+        SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CRYPT_MASK;
+        SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CRYPT_MASK;
+        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CRYPT_MASK;
+    #endif
+#endif
 }
 
 void mbedtls_aes_free(mbedtls_aes_context *ctx)
@@ -27,7 +37,13 @@ void mbedtls_aes_free(mbedtls_aes_context *ctx)
     }
 
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_aes_context));
-    HAL_LSCRYPT_DeInit();
+#if CONFIG_SOC_LS1010
+        HAL_LSCRYPT_DeInit();
+#elif CONFIG_SOC_LSQSH
+    #if CONFIG_SHA256_CLOCK_RESET
+        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CRYPT_MASK;
+    #endif
+#endif
 }
 
 static void aes_config(bool iv_en, bool enc, bool ie, bool dmaen, bool fifoen, uint8_t type, uint8_t mode)

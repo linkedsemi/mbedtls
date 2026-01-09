@@ -92,6 +92,13 @@ void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
     }
 
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha256_context));
+    #if CONFIG_SOC_LS1010
+        HAL_LSSHA_DeInit();
+    #elif CONFIG_SOC_LSQSH
+        #if CONFIG_SHA256_CLOCK_RESET
+            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
+        #endif
+    #endif
 }
 
 int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
@@ -594,6 +601,12 @@ void mbedtls_sha256_init_dma(mbedtls_sha256_context *ctx)
     k_sem_init(&dma_sem, 0, 1);
     k_sem_init(&sha224_sha256_sm3_sem, 0, 1);
     #if CONFIG_SOC_LSQSH
+        #if CONFIG_SHA256_CLOCK_RESET
+            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
+            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CALC_SHA_MASK;
+            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CALC_SHA_MASK;
+            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CALC_SHA_MASK;
+        #endif
         IRQ_CONNECT(CALC_SHA_IRQN, 3, LSSHA224_SHA256_SM3_IRQHandler,NULL, 0);
         irq_enable(CALC_SHA_IRQN);
     #endif
