@@ -5,7 +5,7 @@
 #include "mbedtls/error.h"
 #include "../include/mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
-#include "mbedtls_otbn_hash.h"
+
 #if CONFIG_SOC_LSQSH
     #if CONFIG_SHA256_CLOCK_RESET
         #include "reg_sysc_sec_cpu.h"
@@ -19,6 +19,7 @@
 #include "field_manipulate.h"
 #include "reg_sysc_sec_cpu.h"
 #include "platform.h"
+#include "mbedtls_otbn_hash.h"
 
 void mbedtls_ls_otbn_moudle_init(void);
 void mbedtls_ls_otbn_moudle_deinit(void);
