@@ -84,6 +84,16 @@ bool ecc_random_check(uint8_t *in, uint32_t size)
     return true;
 }
 
+void ecc_p384_random_copy(uint8_t *buf)
+{
+    uint8_t tmp[16];
+    memcpy(tmp, &buf[32], 16);
+
+    memset(&buf[32],0,32);
+    memcpy(&buf[40],tmp,16);
+}
+
+
 void reverse_buf(const uint8_t *input, uint8_t *output,uint16_t input_len, uint16_t output_len)
 {
     uint8_t tmp[input_len];
@@ -153,14 +163,21 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
     {
         size_align = otbn_curve_info.curve_size;
     }
-    f_rng(p_rng,cc_buf,size_align);
-    if(!ecc_random_check(cc_buf,size_align))
+    f_rng(p_rng,cc_buf,otbn_curve_info.curve_size);
+
+    if(!ecc_random_check(cc_buf,otbn_curve_info.curve_size))
     {
         LOG_DBG("mbedtls :trng error\n");
         err = MBEDTLS_ERR_ECP_RANDOM_FAILED;
         goto exit;
     }
-    reverse_buf(cc_buf,cc_buf,size_align,size_align);
+    reverse_buf(cc_buf,cc_buf,otbn_curve_info.curve_size,otbn_curve_info.curve_size);
+    /* for compare with mbedtls software implementation*/
+    if(grp->id == MBEDTLS_ECP_DP_SECP384R1)
+    {
+        ecc_p384_random_copy(cc_buf);
+    }
+
     if(HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align))
     {
         LOG_DBG("mbedtls :trng error\n");
@@ -343,15 +360,20 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     {
         size_align = otbn_curve_info.curve_size;
     }
-    f_rng(p_rng,cc_buf,size_align);
+    f_rng(p_rng,cc_buf,otbn_curve_info.curve_size);
 
-    if(!ecc_random_check(cc_buf,size_align))
+    if(!ecc_random_check(cc_buf,otbn_curve_info.curve_size))
     {
         LOG_DBG("mbedtls :trng error\n");
         err = MBEDTLS_ERR_ECP_RANDOM_FAILED;
         goto exit;
     }
-    reverse_buf(cc_buf,cc_buf,size_align,size_align);
+    reverse_buf(cc_buf,cc_buf,otbn_curve_info.curve_size,otbn_curve_info.curve_size);
+    /* for compare with mbedtls software implementation*/
+    if(gid == MBEDTLS_ECP_DP_SECP384R1)
+    {
+        ecc_p384_random_copy(cc_buf);
+    }
     err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align);
     if(err != 0)
     {
