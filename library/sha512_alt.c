@@ -44,7 +44,13 @@ void ls_otbn_mbedtls_update_callback(void (*func)(void*),void *param);
 #include "qsh.h"
 static mbedtls_threading_mutex_t doneLock;
 static mbedtls_sha512_context* ls_sha_ctx = NULL;
-__attribute__((aligned(4))) static uint32_t buffer[0x20];
+__attribute__((aligned(4))) static uint8_t buffer[0x80];
+
+#ifndef MAX_BLOCK_SIZE
+#define MAX_BLOCK_SIZE 8
+#endif
+__attribute__((aligned(4))) static uint8_t temp_sram_buffer[MAX_BLOCK_SIZE*LS_SHA512_BLOCK_SIZE];
+
 struct k_sem sha384_sha512_sem;
 #define SHA384_SHA512_WAIT_TIMEOUT_MS 100000
 static uint32_t total_cnt;
@@ -188,11 +194,30 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
 
     uint32_t block_number = ilen / LS_SHA512_BLOCK_SIZE;
     if (block_number)
-        block_calculate((uint32_t)msg, block_number);
+    {
+        if((uint32_t)msg % 4)
+        {
+            //The address is not four-byte aligned and needs to be copied
+            for (uint8_t i = 0; i < block_number / MAX_BLOCK_SIZE; i++)
+            {
+                memcpy(temp_sram_buffer, msg, sizeof(temp_sram_buffer));
+                block_calculate((uint32_t)temp_sram_buffer, MAX_BLOCK_SIZE);
+                msg += sizeof(temp_sram_buffer);
+            }
+            if(block_number % MAX_BLOCK_SIZE)
+            {
+                memcpy(temp_sram_buffer, msg, block_number%MAX_BLOCK_SIZE*LS_SHA512_BLOCK_SIZE);
+                block_calculate((uint32_t)temp_sram_buffer, block_number%MAX_BLOCK_SIZE);
+                msg += block_number%MAX_BLOCK_SIZE*LS_SHA512_BLOCK_SIZE;
+            }
+        }else{
+            block_calculate((uint32_t)msg, block_number);
+            msg += block_number * LS_SHA512_BLOCK_SIZE;
+        }
 
     if (ilen % LS_SHA512_BLOCK_SIZE)
     {
-        memcpy(&buffer[buffer_idx], msg + (block_number * LS_SHA512_BLOCK_SIZE), ilen % LS_SHA512_BLOCK_SIZE);
+        memcpy(&buffer[buffer_idx], msg, ilen % LS_SHA512_BLOCK_SIZE);
         buffer_idx = ilen % LS_SHA512_BLOCK_SIZE;
     }
     return 0;
