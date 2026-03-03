@@ -111,6 +111,8 @@ void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
 #endif
     mbedtls_mutex_init(&doneLock);
     k_sem_init(&sha384_sha512_sem, 0, 1);
+    buffer_idx = 0;
+    total_cnt = 0;
     LS_SHA512->INTR_MSK = 0x0;
     LS_SHA512->INTR_CLR = SHA512_INTR_DMA_END_MASK | SHA512_INTR_CALC_END_MASK;
     IRQ_CONNECT(SHA512_IRQN, 3, LSSHA384_SHA512_IRQHandler,NULL, 0);
@@ -122,7 +124,8 @@ void mbedtls_sha512_free(mbedtls_sha512_context *ctx)
     if (ctx == NULL) {
         return;
     }
-
+    buffer_idx = 0;
+    total_cnt = 0;
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha512_context));
 #if CONFIG_SHA512_CLOCK_RESET
     SYSC_SEC_CPU->PD_CPU_CLKG[0] = SYSC_SEC_CPU_CLKG_CLR_SHA512_MASK;
@@ -214,7 +217,7 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
             block_calculate((uint32_t)msg, block_number);
             msg += block_number * LS_SHA512_BLOCK_SIZE;
         }
-
+    }
     if (ilen % LS_SHA512_BLOCK_SIZE)
     {
         memcpy(&buffer[buffer_idx], msg, ilen % LS_SHA512_BLOCK_SIZE);
