@@ -74,7 +74,7 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
     REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_BLOCK_NUM, (block_number - 1));
     LS_SHA512->ADDR = addr;
     assert(((uint32_t)addr % 4) == 0);
-    csi_dcache_clean_range((uint32_t *)addr, block_number*LS_SHA512_BLOCK_SIZE);
+    csi_dcache_clean_range((void *)addr, block_number*LS_SHA512_BLOCK_SIZE);
     // Hardware requirements include 610 and 810 development boards : 
     // 1.irq_disable, 2.start, 3.intr_clr, 4.irq_enable, 5.intr_mask
     irq_disable(SHA512_IRQN);
