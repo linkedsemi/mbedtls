@@ -166,8 +166,11 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         aes_config(true, false, false, false, false, 0x0, 0x1);
     }
 
+    unsigned char last_input_block[16];
+
     while(in < (uint32_t*)end_addr)
     {
+        memcpy(last_input_block, in, 16);
         LSCRYPT->DATA3 = __builtin_bswap32(*in++);
         LSCRYPT->DATA2 = __builtin_bswap32(*in++);
         LSCRYPT->DATA1 = __builtin_bswap32(*in++);
@@ -181,6 +184,16 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         *out++ = __builtin_bswap32(LSCRYPT->RES1);
         *out++ = __builtin_bswap32(LSCRYPT->RES0);
     }
+
+    /* Write back updated IV to caller's iv buffer.
+     * CBC encrypt: IV = last ciphertext output block.
+     * CBC decrypt: IV = last ciphertext input block. */
+    if (mode == MBEDTLS_AES_DECRYPT) {
+        memcpy(iv, last_input_block, 16);
+    } else {
+        memcpy(iv, (unsigned char *)(out - 4), 16);
+    }
+
     return 0;
 }
 
