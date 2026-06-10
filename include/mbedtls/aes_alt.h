@@ -4,6 +4,8 @@
 
 #if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
 typedef struct mbedtls_aes_context {
+    unsigned char key[32];
+    unsigned int keybits;
 }
 mbedtls_aes_context;
 

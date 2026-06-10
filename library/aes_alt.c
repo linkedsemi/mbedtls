@@ -40,9 +40,8 @@ void mbedtls_aes_free(mbedtls_aes_context *ctx)
 #if CONFIG_SOC_LS1010
         HAL_LSCRYPT_DeInit();
 #elif CONFIG_SOC_LSQSH
-    #if CONFIG_SHA256_CLOCK_RESET
-        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CRYPT_MASK;
-    #endif
+    /* 不能关时钟：所有 AES context 共享同一套硬件 KEY 寄存器，
+     * 关掉会导致其他 context 无法访问硬件。 */
 #endif
 }
 
@@ -52,8 +51,9 @@ static void aes_config(bool iv_en, bool enc, bool ie, bool dmaen, bool fifoen, u
         0<<CRYPT_CRYSEL_POS|(dmaen?1:0)<<CRYPT_DMAEN_POS|(fifoen?1:0)<<CRYPT_FIFOODR_POS|(fifoen?1:0)<<CRYPT_FIFOEN_POS|type<<CRYPT_TYPE_POS|(ie?1:0)<<CRYPT_IE_POS|(iv_en?1:0)<<CRYPT_IVREN_POS|mode<<CRYPT_MODE_POS|(enc?1:0)<<CRYPT_ENCS_POS);
 }
 
-int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
-                           unsigned int keybits)
+/* Write key to hardware KEY registers. Shared by setkey and crypt functions
+ * to ensure each context's own key is loaded before every hardware operation. */
+static int aes_hw_setkey(const unsigned char *key, unsigned int keybits)
 {
     uint8_t keysize = 0;
     uint32_t *u32_key = (uint32_t *)key;
@@ -97,6 +97,24 @@ int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
     return 0;
 }
 
+int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
+                           unsigned int keybits)
+{
+    int ret;
+
+    ret = aes_hw_setkey(key, keybits);
+    if (ret != 0) {
+        return ret;
+    }
+
+    /* Save key in context so crypt_ecb/crypt_cbc/crypt_ctr can restore it
+     * when another context has overwritten the hardware KEY registers. */
+    memcpy(ctx->key, key, keybits / 8);
+    ctx->keybits = keybits;
+
+    return 0;
+}
+
 int mbedtls_aes_setkey_dec(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
@@ -114,6 +132,10 @@ int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
 
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
+
+    /* Restore this context's key — a different context may have overwritten
+     * the shared hardware KEY registers since the last setkey call. */
+    aes_hw_setkey(ctx->key, ctx->keybits);
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
@@ -153,6 +175,8 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
     uint32_t *u32_iv = (uint32_t *)iv;
+
+    aes_hw_setkey(ctx->key, ctx->keybits);
 
     LSCRYPT->IVR3 = __builtin_bswap32(*u32_iv++);
     LSCRYPT->IVR2 = __builtin_bswap32(*u32_iv++);
@@ -342,6 +366,8 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
     uint32_t *out = (uint32_t *)output;
 
     uint32_t *u32_counter = (uint32_t *)nonce_counter;
+
+    aes_hw_setkey(ctx->key, ctx->keybits);
 
     aes_config(false, true, false, false, false, 0x0, 0x2);
 
