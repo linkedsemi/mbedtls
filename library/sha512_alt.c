@@ -51,9 +51,14 @@ __attribute__((aligned(4))) static uint8_t buffer[0x80];
 #endif
 __attribute__((aligned(4))) static uint8_t temp_sram_buffer[MAX_BLOCK_SIZE*LS_SHA512_BLOCK_SIZE];
 
+static inline bool is_sram_address(uint32_t addr) {
+    return ((addr >= 0x10000000 && addr < 0x10140000)
+            || (addr >= 0x30000000 && addr < 0x30140000));
+}
+
 struct k_sem sha384_sha512_sem;
 #define SHA384_SHA512_WAIT_TIMEOUT_MS 100000
-static uint32_t total_cnt;
+static uint64_t total_cnt;
 static uint32_t buffer_idx;
 static bool isFirst;
 static uint8_t read_reg_count;
@@ -72,7 +77,7 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
 {
     while ((LS_SHA512->STATUS & 0x1) != 0x1) ;
     REG_FIELD_WR(LS_SHA512->CTRL, SHA512_CTRL_BLOCK_NUM, (block_number - 1));
-    LS_SHA512->ADDR = addr;
+    LS_SHA512->ADDR = addr & (~BIT(29));
     assert(((uint32_t)addr % 4) == 0);
     csi_dcache_clean_range((void *)addr, block_number*LS_SHA512_BLOCK_SIZE);
     // Hardware requirements include 610 and 810 development boards : 
@@ -164,64 +169,83 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     return 0;
 }
 
-int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
+int linkedsemi_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-    if (!ctx->start_calc_symbol)
-    {
+    if (!ctx->start_calc_symbol) {
         mbedtls_mutex_lock(&doneLock);
         ls_sha_ctx = ctx;
         ctx->start_calc_symbol = true;
     }
+
     assert(ls_sha_ctx == ctx);
-    assert(((uint32_t)input % 4) == 0);
-    uint8_t *msg = (uint8_t *)input;
+    assert(is_sram_address((uint32_t)input) && ((uint32_t)input % 4) == 0);
+
     total_cnt += ilen;
 
-    if (buffer_idx)
-    {
-        if ((ilen + buffer_idx) < LS_SHA512_BLOCK_SIZE)
-        {
-            memcpy(&buffer[buffer_idx], input, ilen);
-            buffer_idx += ilen;
-            return 0;
+    if (ilen) {
+        if (buffer_idx) {
+            if ((ilen + buffer_idx) < LS_SHA512_BLOCK_SIZE) {
+                memcpy(buffer + buffer_idx, input, ilen);
+                buffer_idx += ilen;
+                return 0;
+            } else {
+                uint32_t wr_len = LS_SHA512_BLOCK_SIZE - buffer_idx;
+                memcpy((uint8_t *)buffer + buffer_idx, input, wr_len);
+                block_calculate((uint32_t)buffer, 1);
+                buffer_idx = 0;
+                ilen -= wr_len;
+                input += wr_len;
+            }
         }
-        uint32_t wr_len = LS_SHA512_BLOCK_SIZE - buffer_idx;
-        memcpy(&buffer[buffer_idx], msg, wr_len);
-        block_calculate((uint32_t)buffer, 1);
-        buffer_idx = 0;
-        ilen -= wr_len;
-        msg += wr_len;
     }
 
     uint32_t block_number = ilen / LS_SHA512_BLOCK_SIZE;
-    if (block_number)
-    {
-        if((uint32_t)msg % 4)
-        {
-            //The address is not four-byte aligned and needs to be copied
-            for (uint8_t i = 0; i < block_number / MAX_BLOCK_SIZE; i++)
-            {
-                memcpy(temp_sram_buffer, msg, sizeof(temp_sram_buffer));
+    if (block_number) {
+        if ((uint32_t)input % 4) {
+            for (uint32_t i = 0; i < block_number / MAX_BLOCK_SIZE; i++) {
+                memcpy(temp_sram_buffer, input, sizeof(temp_sram_buffer));
                 block_calculate((uint32_t)temp_sram_buffer, MAX_BLOCK_SIZE);
-                msg += sizeof(temp_sram_buffer);
+                input += sizeof(temp_sram_buffer);
             }
-            if(block_number % MAX_BLOCK_SIZE)
-            {
-                memcpy(temp_sram_buffer, msg, block_number%MAX_BLOCK_SIZE*LS_SHA512_BLOCK_SIZE);
-                block_calculate((uint32_t)temp_sram_buffer, block_number%MAX_BLOCK_SIZE);
-                msg += block_number%MAX_BLOCK_SIZE*LS_SHA512_BLOCK_SIZE;
+            if (block_number % MAX_BLOCK_SIZE) {
+                memcpy(temp_sram_buffer, input, (block_number % MAX_BLOCK_SIZE) * LS_SHA512_BLOCK_SIZE);
+                block_calculate((uint32_t)temp_sram_buffer, block_number % MAX_BLOCK_SIZE);
+                input += (block_number % MAX_BLOCK_SIZE) * LS_SHA512_BLOCK_SIZE;
             }
         }else{
-            block_calculate((uint32_t)msg, block_number);
-            msg += block_number * LS_SHA512_BLOCK_SIZE;
+            block_calculate((uint32_t)input, block_number);
+            input += block_number * LS_SHA512_BLOCK_SIZE;
         }
     }
-    if (ilen % LS_SHA512_BLOCK_SIZE)
-    {
-        memcpy(&buffer[buffer_idx], msg, ilen % LS_SHA512_BLOCK_SIZE);
+
+    if (ilen % LS_SHA512_BLOCK_SIZE) {
+        memcpy((uint8_t *)buffer, input, ilen % LS_SHA512_BLOCK_SIZE);
         buffer_idx = ilen % LS_SHA512_BLOCK_SIZE;
+    }
+    return 0;
+}
+
+int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
+                          const unsigned char *input,
+                          size_t ilen)
+{
+    if (is_sram_address((uint32_t)input) && ((uint32_t)input % 4) == 0) {
+        linkedsemi_sha512_update(ctx, input, ilen);
+    } else {
+        uint8_t *current = (uint8_t *)input;
+        uint32_t remain = ilen % sizeof(temp_sram_buffer);
+
+        for(uint32_t blk = 0; blk < (ilen / sizeof(temp_sram_buffer)); blk++) {
+            memcpy(temp_sram_buffer, current, sizeof(temp_sram_buffer));
+            linkedsemi_sha512_update(ctx, temp_sram_buffer, sizeof(temp_sram_buffer));
+            current += sizeof(temp_sram_buffer);
+        }
+        if (remain) {
+            memcpy(temp_sram_buffer, current, remain);
+            linkedsemi_sha512_update(ctx, temp_sram_buffer, remain);
+        }
     }
     return 0;
 }
