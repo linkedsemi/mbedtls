@@ -17,22 +17,9 @@
 #include "field_manipulate.h"
 #include "reg_sysc_sec_cpu.h"
 #include "platform.h"
+#include "ls_otbn_config.h"
 void mbedtls_ls_otbn_moudle_init(void);
-void mbedtls_ls_otbn_moudle_deinit(void);
-void mbedtls_ls_otbn_threading_release(void);
-bool mbedtls_ls_otbn_is_operation_current_thread(void);
-int mbedtls_ls_otbn_operation_init(ls_otbn_fireware_t fireware_id);
-void ls_otbn_mbedtls_update_callback(void (*func)(void*),void *param);
-// static struct k_sem wait_complete;
-// static void mbedtls_ls_otbn_sha512_handler()
-// {
-//     if (LSOTBN->INTR_STATE)
-//     {
-//         LSOTBN->INTR_STATE = OTBN_INTR_STATE_DONE_MASK;
-//         // k_sem_give(&wait_complete);
-
-//     }
-// }
+int mbedtls_ls_otbn_operation_init(otbn_firmware_t firmware_id);
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_HARDWARE_ALT)
@@ -304,7 +291,7 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 
-#if !defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 
 static mbedtls_sha512_context* ls_sha_ctx = NULL;
 
@@ -341,7 +328,7 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     }
 #endif
 
-    err = mbedtls_ls_otbn_operation_init(((is384 == true)?OBTN_SHA384:OTBN_SHA512));
+    err = mbedtls_ls_otbn_operation_init(((is384 == true)?OTBN_FIRMWARE_SHA384:OTBN_FIRMWARE_SHA512));
     if(err)
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
@@ -367,7 +354,7 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
                           size_t ilen)
 {
 
-    if(!mbedtls_ls_otbn_is_operation_current_thread())
+    if(!ls_otbn_session_is_owner())
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
@@ -397,7 +384,7 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
     assert(ls_sha_ctx == ctx);
     unsigned int key;
 
-    if(!mbedtls_ls_otbn_is_operation_current_thread())
+    if(!ls_otbn_session_is_owner())
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
@@ -413,13 +400,11 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
     }
 
     /* The hash algorithm on the OTBN is currently executed using the blocking method only. */
-    // ls_otbn_mbedtls_update_callback(mbedtls_ls_otbn_sha512_handler,NULL);
     key = irq_lock();
 
     ls_sha_ctx = NULL;
     ctx->start_calc_symbol = false;
-    mbedtls_ls_otbn_moudle_deinit();
-    mbedtls_ls_otbn_threading_release();
+    ls_otbn_session_release();
 
     irq_unlock(key);
     return 0;

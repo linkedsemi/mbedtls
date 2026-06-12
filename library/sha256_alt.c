@@ -20,19 +20,10 @@
 #include "reg_sysc_sec_cpu.h"
 #include "platform.h"
 #include "mbedtls_otbn_hash.h"
-
+#include "ls_otbn_config.h"
 void mbedtls_ls_otbn_moudle_init(void);
-void mbedtls_ls_otbn_moudle_deinit(void);
-void mbedtls_ls_otbn_threading_release(void);
-bool mbedtls_ls_otbn_is_operation_current_thread(void);
-int mbedtls_ls_otbn_operation_init(ls_otbn_fireware_t fireware_id);
-// static struct k_sem wait_complete;
-void ls_otbn_mbedtls_update_callback(void (*func)(void*),void *param);
+int mbedtls_ls_otbn_operation_init(otbn_firmware_t firmware_id);
 
-// static void mbedtls_ls_otbn_hash_handler()
-// {
-
-// }
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT)
@@ -164,7 +155,7 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 
 #if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
 
-#if !defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 
@@ -177,7 +168,7 @@ int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
 {
     int err;
 
-    err = mbedtls_ls_otbn_operation_init(OTBN_SM3);
+    err = mbedtls_ls_otbn_operation_init(OTBN_FIRMWARE_SM3);
     if(err)
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
@@ -193,7 +184,7 @@ int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
 {
     int ret = 0;
 
-    if(!mbedtls_ls_otbn_is_operation_current_thread())
+    if(!ls_otbn_session_is_owner())
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
@@ -228,7 +219,7 @@ int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
     int ret = 0;
     assert(ls_sha_ctx == ctx);
     unsigned int key;
-    if(!mbedtls_ls_otbn_is_operation_current_thread())
+    if(!ls_otbn_session_is_owner())
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
@@ -239,8 +230,7 @@ int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
 
     ls_sha_ctx = NULL;
     ctx->start_calc_symbol = false;
-    mbedtls_ls_otbn_moudle_deinit();
-    mbedtls_ls_otbn_threading_release();
+    ls_otbn_session_release();
     irq_unlock(key);
 
     return ret;
@@ -295,7 +285,7 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
         /* not support */
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }else{
-        err = mbedtls_ls_otbn_operation_init(OTBN_SHA256);
+        err = mbedtls_ls_otbn_operation_init(OTBN_FIRMWARE_SHA256);
         if(err)
         {
             return MBEDTLS_ERR_LS_OTBN_BUSY;
@@ -312,7 +302,7 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
 {
     int ret = 0;
 
-    if(!mbedtls_ls_otbn_is_operation_current_thread())
+    if(!ls_otbn_session_is_owner())
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
@@ -335,20 +325,18 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
     int ret = 0;
     assert(ls_sha_ctx == ctx);
     unsigned int key;
-    if(!mbedtls_ls_otbn_is_operation_current_thread())
+    if(!ls_otbn_session_is_owner())
     {
         return MBEDTLS_ERR_LS_OTBN_BUSY;
     }
 
-    // ls_otbn_mbedtls_update_callback(mbedtls_ls_otbn_hash_handler,NULL);
     ls_otbn_sha256_final_for_rtos(output);
 
     key = irq_lock();
 
     ls_sha_ctx = NULL;
     ctx->start_calc_symbol = false;
-    mbedtls_ls_otbn_moudle_deinit();
-    mbedtls_ls_otbn_threading_release();
+    ls_otbn_session_release();
 
     irq_unlock(key);
     return ret;

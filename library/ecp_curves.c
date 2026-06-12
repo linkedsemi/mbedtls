@@ -4838,7 +4838,7 @@ int mbedtls_ecp_group_load(mbedtls_ecp_group *grp, mbedtls_ecp_group_id id)
             grp->modp = ecp_mod_p448;
             return ecp_use_curve448(grp);
 #endif /* MBEDTLS_ECP_DP_CURVE448_ENABLED */
-#if defined(CONFIG_MBEDTLS_ECDSA_SECP256R1_SECP384R1_SM2_LINKEDSEMI_OTBN_ALT)||defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION)
+#if defined(CONFIG_MBEDTLS_ECDSA_SECP256R1_SECP384R1_SM2_LINKEDSEMI_OTBN_ALT)||defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION)
         case MBEDTLS_ECP_DP_SM2:
             grp->modp = NULL;
             /*ls_otbn unused this parameter*/

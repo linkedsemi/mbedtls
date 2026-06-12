@@ -11,7 +11,7 @@
  *
  * SEC1 https://www.secg.org/sec1-v2.pdf
  */
-#if !defined(CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 #include "common.h"
 
 #if defined(MBEDTLS_ECDSA_C)
@@ -30,14 +30,13 @@
 #include "ls_msp_otbn.h"
 #include "field_manipulate.h"
 #include "reg_sysc_sec_cpu.h"
-#include "platform.h"
 
 #include "mbedtls/platform_util.h"
 #include "mbedtls/error.h"
 #include "mbedtls/threading.h"
 
 #include "ls_otbn_ecc.h"
-#include "ls_hal_otbn.h"
+#include "ls_otbn_config.h"
 
 #include <zephyr/irq.h>
 #include <zephyr/kernel.h>
@@ -48,20 +47,11 @@ LOG_MODULE_DECLARE(mbedtls,CONFIG_MBEDTLS_LOG_LEVEL);
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 #define ASSERT_MBEDTLS(error) {if(error){__ASSERT_PRINT("mbedtls :stack is too small\n"); err = MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL; goto exit;}}
 
-extern void ls_otbn_cmd(enum HAL_OTBN_CMD cmd);
 void mbedtls_ls_otbn_moudle_init(void);
-void mbedtls_ls_otbn_moudle_deinit(void);
-void mbedtls_ls_otbn_threading_release(void);
-int mbedtls_ls_otbn_operation_init(ls_otbn_fireware_t fireware_id);
-void ls_otbn_mbedtls_update_callback(void (*func)(void*),void *param);
-bool mbedtls_ls_otbn_is_operation_current_thread(void);
-ls_otbn_fireware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve);
-int get_curve_otbn_info(ls_otbn_fireware_t curve, ecc_remote_addr *info);
-
-static void otbn_ecdsa_callback(void *param)
-{
-
-}
+void ls_otbn_session_release(void);
+int mbedtls_ls_otbn_operation_init(otbn_firmware_t firmware_id);
+otbn_firmware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve);
+int get_curve_otbn_info(uint32_t curve, ecc_remote_addr *info);
 
 bool ecc_random_check(uint8_t *in, uint32_t size)
 {
@@ -109,17 +99,11 @@ void reverse_buf(const uint8_t *input, uint8_t *output,uint16_t input_len, uint1
     memcpy(output,tmp,input_len);
 }
 
-int mbedtls_ls_otbn_ecdsa_init(ls_otbn_fireware_t curve)
-{
-    return mbedtls_ls_otbn_operation_init(curve);
-}
-
-void mbedtls_ls_otbn_ecdsa_deinit(void)
+void mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit(void)
 {
     unsigned int key;
     key = irq_lock();
-    mbedtls_ls_otbn_moudle_deinit();
-    mbedtls_ls_otbn_threading_release();
+    ls_otbn_session_release();
     irq_unlock(key);
 }
 
@@ -141,13 +125,12 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
         LOG_DBG(" the curve is not supported, curve id: %d\n",grp->id);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
     }
-    err = mbedtls_ls_otbn_ecdsa_init(mbedtls_get_otbn_curve_id(grp->id));
+    err = mbedtls_ls_otbn_operation_init(mbedtls_get_otbn_curve_id(grp->id));
     if(err)
     {
         return err;
     }
 
-    ls_otbn_mbedtls_update_callback(otbn_ecdsa_callback,NULL);
     if(get_curve_otbn_info(mbedtls_get_otbn_curve_id(grp->id),&otbn_curve_info) != 0)
     {
         LOG_DBG("Otbn err state or curve don't adaptived\n");
@@ -178,7 +161,7 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
         ecc_p384_random_copy(cc_buf);
     }
 
-    if(HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align))
+    if(ls_otbn_dmem_write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align))
     {
         LOG_DBG("mbedtls :trng error\n");
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
@@ -186,12 +169,12 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
     }
     if(err == 0)
     {
-        err |=HAL_OTBN_DMEM_Write(otbn_curve_info.remote_mode_addr, (uint32_t *)&mode, 4);
+        err |=ls_otbn_dmem_write(otbn_curve_info.remote_mode_addr, (uint32_t *)&mode, 4);
         mbedtls_mpi_write_binary_le(d,cc_buf,n_size);
-        err |=HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_d0, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
-        err |=HAL_OTBN_DMEM_Set(otbn_curve_info.remote_addr_d1,0,otbn_curve_info.curve_size);
+        err |=ls_otbn_dmem_write(otbn_curve_info.remote_addr_d0, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+        err |=ls_otbn_dmem_set(otbn_curve_info.remote_addr_d1,0,otbn_curve_info.curve_size);
         reverse_buf(buf,otbn_msg,use_size,otbn_curve_info.curve_size);
-        err |=HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_msg, (uint32_t *)otbn_msg, otbn_curve_info.curve_size);
+        err |=ls_otbn_dmem_write(otbn_curve_info.remote_addr_msg, (uint32_t *)otbn_msg, otbn_curve_info.curve_size);
     }   
     if(err != 0)
     {
@@ -200,7 +183,7 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
         goto exit;
     }
 
-    ls_otbn_cmd(HAL_OTBN_CMD_EXECUTE);
+    ls_otbn_cmd(OTBN_CMD_EXECUTE);
 
     err = HAL_OTBN_Error_Bit_Get();
     if(err)
@@ -210,16 +193,16 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
     }
     else
     {
-        HAL_OTBN_DMEM_Read(otbn_curve_info.remote_addr_r, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+        ls_otbn_dmem_read(otbn_curve_info.remote_addr_r, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
         err = mbedtls_mpi_read_binary_le(r,cc_buf,otbn_curve_info.curve_size);
         ASSERT_MBEDTLS(err);
-        HAL_OTBN_DMEM_Read(otbn_curve_info.remote_addr_s, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+        ls_otbn_dmem_read(otbn_curve_info.remote_addr_s, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
         err = mbedtls_mpi_read_binary_le(s,cc_buf,otbn_curve_info.curve_size);
         ASSERT_MBEDTLS(err);
     }
 
 exit:
-    mbedtls_ls_otbn_ecdsa_deinit();
+    mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
 }   
 #endif
@@ -248,14 +231,13 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
         LOG_DBG(" the curve is not supported, curve id: %d\n",grp->id);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
     }
-    err = mbedtls_ls_otbn_ecdsa_init(mbedtls_get_otbn_curve_id(grp->id));
+    err = mbedtls_ls_otbn_operation_init(mbedtls_get_otbn_curve_id(grp->id));
     if(err)
     {
         LOG_DBG("mbedtls : otbn initial failed");
         return err;
     }
 
-    ls_otbn_mbedtls_update_callback(otbn_ecdsa_callback,NULL);
     if(get_curve_otbn_info(mbedtls_get_otbn_curve_id(grp->id),&otbn_curve_info) != 0)
     {
         LOG_DBG("Otbn err state or curve don't adaptived\n");
@@ -263,7 +245,7 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
         goto exit;
     }
 
-    err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_mode_addr, (uint32_t *)&mode, 4);
+    err = ls_otbn_dmem_write(otbn_curve_info.remote_mode_addr, (uint32_t *)&mode, 4);
     if(err != 0)
     {
         LOG_DBG("mbedtls : MBEDTLS_ERR_ECP_IN_PROGRESS 1\n");
@@ -272,24 +254,24 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
     }
 
     ASSERT_MBEDTLS(mbedtls_mpi_write_binary_le(&Q->X,cc_buf,n_size));
-    err |= HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_qx, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+    err |= ls_otbn_dmem_write(otbn_curve_info.remote_addr_qx, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
     ASSERT_MBEDTLS(mbedtls_mpi_write_binary_le(&Q->Y,cc_buf,n_size));
-    err |= HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_qy, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+    err |= ls_otbn_dmem_write(otbn_curve_info.remote_addr_qy, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
 
     reverse_buf(buf,cc_buf,use_size,otbn_curve_info.curve_size);
-    err |= HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_msg, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+    err |= ls_otbn_dmem_write(otbn_curve_info.remote_addr_msg, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
 
     ASSERT_MBEDTLS(mbedtls_mpi_write_binary_le(s,cc_buf,n_size));
-    err |= HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_s, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+    err |= ls_otbn_dmem_write(otbn_curve_info.remote_addr_s, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
     ASSERT_MBEDTLS(mbedtls_mpi_write_binary_le(r,cc_buf,n_size));
-    err |= HAL_OTBN_DMEM_Write(otbn_curve_info.remote_addr_r, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+    err |= ls_otbn_dmem_write(otbn_curve_info.remote_addr_r, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
     if(err != 0)
     {
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
         goto exit;
     }
 
-    ls_otbn_cmd(HAL_OTBN_CMD_EXECUTE);
+    ls_otbn_cmd(OTBN_CMD_EXECUTE);
 
     err = HAL_OTBN_Error_Bit_Get();
     if(err)
@@ -299,7 +281,7 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
     }
     else
     {
-        HAL_OTBN_DMEM_Read(otbn_curve_info.remote_addr_r_x, (uint32_t *)r_x, otbn_curve_info.curve_size);
+        ls_otbn_dmem_read(otbn_curve_info.remote_addr_r_x, (uint32_t *)r_x, otbn_curve_info.curve_size);
         if(memcmp(r_x,cc_buf,otbn_curve_info.curve_size))
         {
             err = MBEDTLS_ERR_ECP_VERIFY_FAILED;
@@ -308,7 +290,7 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
     }
 
 exit:
-    mbedtls_ls_otbn_ecdsa_deinit();
+    mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
 }
 #endif
@@ -332,13 +314,12 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
         LOG_DBG(" the curve is not supported, curve id: %d\n",gid);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
     }
-    err = mbedtls_ls_otbn_ecdsa_init(mbedtls_get_otbn_curve_id(gid));
+    err = mbedtls_ls_otbn_operation_init(mbedtls_get_otbn_curve_id(gid));
     if(err)
     {
         return err;
     }
 
-    ls_otbn_mbedtls_update_callback(otbn_ecdsa_callback,NULL);
     if(get_curve_otbn_info(mbedtls_get_otbn_curve_id(gid),&otbn_curve_info) != 0)
     {
         LOG_DBG("Otbn err state or curve don't adaptived\n");
@@ -346,7 +327,7 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
         goto exit;
     }
 
-    err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_mode_addr, (uint32_t *)&mode, 4);
+    err = ls_otbn_dmem_write(otbn_curve_info.remote_mode_addr, (uint32_t *)&mode, 4);
     if(err != 0)
     {
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
@@ -374,14 +355,14 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     {
         ecc_p384_random_copy(cc_buf);
     }
-    err = HAL_OTBN_DMEM_Write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align);
+    err = ls_otbn_dmem_write(otbn_curve_info.remote_random_addr, (uint32_t *)cc_buf, size_align);
     if(err != 0)
     {
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
         goto exit;
     }
 
-    ls_otbn_cmd(HAL_OTBN_CMD_EXECUTE);
+    ls_otbn_cmd(OTBN_CMD_EXECUTE);
 
     err = HAL_OTBN_Error_Bit_Get();
     if(err)
@@ -391,37 +372,37 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     }
     else
     {
-        HAL_OTBN_DMEM_Read(otbn_curve_info.remote_addr_d0, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+        ls_otbn_dmem_read(otbn_curve_info.remote_addr_d0, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
         err = mbedtls_mpi_read_binary_le(&ctx->d,cc_buf,otbn_curve_info.curve_size);
         ASSERT_MBEDTLS(err);
-        HAL_OTBN_DMEM_Read(otbn_curve_info.remote_addr_qx, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+        ls_otbn_dmem_read(otbn_curve_info.remote_addr_qx, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
         err = mbedtls_mpi_read_binary_le(&ctx->Q.X,cc_buf,otbn_curve_info.curve_size);
         ASSERT_MBEDTLS(err);
-        HAL_OTBN_DMEM_Read(otbn_curve_info.remote_addr_qy, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
+        ls_otbn_dmem_read(otbn_curve_info.remote_addr_qy, (uint32_t *)cc_buf, otbn_curve_info.curve_size);
         err = mbedtls_mpi_read_binary_le(&ctx->Q.Y,cc_buf,otbn_curve_info.curve_size);
         ASSERT_MBEDTLS(err);
     }
 
 exit:
-    mbedtls_ls_otbn_ecdsa_deinit();
+    mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
 }
 
 #endif
 
-ls_otbn_fireware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve)
+otbn_firmware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve)
 {
-    ls_otbn_fireware_t id = OTBN_UNUSED;
+    otbn_firmware_t id = OTBN_FIRMWARE_UNUSED;
     switch (mbedtls_curve)
     {
     case MBEDTLS_ECP_DP_SECP256R1:
-        id = OTBN_ECDSA_P256;
+        id = OTBN_FIRMWARE_ECDSA_P256;
         break;
     case MBEDTLS_ECP_DP_SECP384R1:
-        id = OTBN_ECDSA_P384;
+        id = OTBN_FIRMWARE_ECDSA_P384;
         break;
     case MBEDTLS_ECP_DP_SM2:
-        id = OTBN_SM2;
+        id = OTBN_FIRMWARE_SM2;
         break;
     default:
         break;
@@ -432,4 +413,4 @@ ls_otbn_fireware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve)
 
 
 #endif /* MBEDTLS_ECDSA_C */
-#endif /* !CONFIG_MEBDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT */
+#endif /* !CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT */
