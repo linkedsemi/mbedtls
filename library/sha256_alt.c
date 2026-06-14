@@ -13,17 +13,7 @@
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
-#include "ls_hal_otbn_sha.h"
-#include "ls_hal_otbn.h"
-#include "ls_msp_otbn.h"
-#include "field_manipulate.h"
-#include "reg_sysc_sec_cpu.h"
-#include "platform.h"
-#include "mbedtls_otbn_hash.h"
-#include "ls_otbn_config.h"
-void mbedtls_ls_otbn_moudle_init(void);
-int mbedtls_ls_otbn_operation_init(otbn_firmware_t firmware_id);
-
+#include "otbn_hash.h"
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT)
@@ -155,9 +145,17 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 
 #if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
 
-#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+#include "otbn_hash.h"
+
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
-static mbedtls_sha256_context* ls_sha_ctx = NULL;
+
+static int otbn_err_to_mbedtls(int err)
+{
+    if (err == 0) {
+        return 0;
+    }
+    return MBEDTLS_ERR_LS_OTBN_BUSY;
+}
 
 void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
 {
@@ -166,74 +164,20 @@ void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
 
 int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
 {
-    int err;
-
-    err = mbedtls_ls_otbn_operation_init(OTBN_FIRMWARE_SM3);
-    if(err)
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
-    ls_otbn_sm3_init_for_rtos();
-
-    return 0;
+    return otbn_err_to_mbedtls(otbn_hash_init(&ctx->otbn, OTBN_HASH_ALGO_SM3));
 }
 
 int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-    int ret = 0;
-
-    if(!ls_otbn_session_is_owner())
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
-    if (!ctx->start_calc_symbol)
-    {
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
-
-    ls_otbn_sm3_update_for_rtos((uint8_t *)input, ilen);
-
-    return ret;
-}
-
-void reversion_sm3_hash(uint8_t *input,uint8_t *output)
-{
-    uint32_t tmp[8];
-    memcpy((uint8_t *)tmp,input,32);
-    for(uint8_t i = 0; i < 8; i++)
-    {
-        *output++ = (uint8_t)(tmp[7 - i] >> 0);
-        *output++ = (uint8_t)(tmp[7 - i] >> 8);
-        *output++ = (uint8_t)(tmp[7 - i] >> 16);
-        *output++ = (uint8_t)(tmp[7 - i] >> 24);
-    }
+    return otbn_err_to_mbedtls(otbn_hash_update(&ctx->otbn, input, (uint32_t)ilen));
 }
 
 int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
                           unsigned char *output)
 {
-    int ret = 0;
-    assert(ls_sha_ctx == ctx);
-    unsigned int key;
-    if(!ls_otbn_session_is_owner())
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
-
-    ls_otbn_sm3_final_for_rtos(output);
-    reversion_sm3_hash(output,output);
-    key = irq_lock();
-
-    ls_sha_ctx = NULL;
-    ctx->start_calc_symbol = false;
-    ls_otbn_session_release();
-    irq_unlock(key);
-
-    return ret;
+    return otbn_err_to_mbedtls(otbn_hash_final(&ctx->otbn, output));
 }
 
 void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
@@ -248,10 +192,6 @@ void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
 void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha256_context));
-
-
-    // k_sem_init(&wait_complete,0,1);
-
 }
 
 void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
@@ -265,7 +205,6 @@ void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
 
 int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
 {
-    int err;
 #if defined(MBEDTLS_SHA224_C) && defined(MBEDTLS_SHA256_C)
     if (is224 != 0 && is224 != 1) {
         return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
@@ -280,66 +219,40 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     }
 #endif
 
-    if(is224)
-    {
-        /* not support */
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }else{
-        err = mbedtls_ls_otbn_operation_init(OTBN_FIRMWARE_SHA256);
-        if(err)
-        {
-            return MBEDTLS_ERR_LS_OTBN_BUSY;
-        }
-        ls_otbn_sha256_init_for_rtos();
+    if (is224) {
+        ctx->is224 = true;
+        return otbn_err_to_mbedtls(otbn_hash_init(&ctx->otbn, OTBN_HASH_ALGO_SHA224));
     }
 
-    return 0;
+    ctx->is224 = false;
+    return otbn_err_to_mbedtls(otbn_hash_init(&ctx->otbn, OTBN_HASH_ALGO_SHA256));
 }
 
 int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-    int ret = 0;
-
-    if(!ls_otbn_session_is_owner())
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
-
-    if (!ctx->start_calc_symbol)
-    {
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
-
-    ls_otbn_sha256_update_for_rtos((uint8_t *)input, ilen);
-
-    return ret;
+    return otbn_err_to_mbedtls(otbn_hash_update(&ctx->otbn, input, (uint32_t)ilen));
 }
 
 int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
                           unsigned char *output)
 {
-    int ret = 0;
-    assert(ls_sha_ctx == ctx);
-    unsigned int key;
-    if(!ls_otbn_session_is_owner())
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
+    uint8_t tmp[32];
+    int ret;
+
+    ret = otbn_hash_final(&ctx->otbn, tmp);
+    if (ret != 0) {
+        return otbn_err_to_mbedtls(ret);
     }
 
-    ls_otbn_sha256_final_for_rtos(output);
+    if (ctx->is224) {
+        memcpy(output, tmp, 28);
+    } else {
+        memcpy(output, tmp, 32);
+    }
 
-    key = irq_lock();
-
-    ls_sha_ctx = NULL;
-    ctx->start_calc_symbol = false;
-    ls_otbn_session_release();
-
-    irq_unlock(key);
-    return ret;
+    return 0;
 }
 
 #else
@@ -360,10 +273,6 @@ int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
     return 0;
 }
 
-void reversion_sm3_hash(uint8_t *input,uint8_t *output)
-{
-}
-
 int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
                           unsigned char *output)
 {
@@ -399,8 +308,6 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 {
     return 0;
 }
-#endif
-
 #endif /* CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT */
 
 

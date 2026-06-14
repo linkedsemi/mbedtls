@@ -10,16 +10,7 @@
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_OTBN_ALT)
-#include "mbedtls_otbn_hash.h"
-#include "ls_hal_otbn_sha.h"
-#include "ls_hal_otbn.h"
-#include "ls_msp_otbn.h"
-#include "field_manipulate.h"
-#include "reg_sysc_sec_cpu.h"
-#include "platform.h"
-#include "ls_otbn_config.h"
-void mbedtls_ls_otbn_moudle_init(void);
-int mbedtls_ls_otbn_operation_init(otbn_firmware_t firmware_id);
+#include "otbn_hash.h"
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_HARDWARE_ALT)
@@ -67,7 +58,7 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
     LS_SHA512->ADDR = addr & (~BIT(29));
     assert(((uint32_t)addr % 4) == 0);
     csi_dcache_clean_range((void *)addr, block_number*LS_SHA512_BLOCK_SIZE);
-    // Hardware requirements include 610 and 810 development boards : 
+    // Hardware requirements include 610 and 810 development boards :
     // 1.irq_disable, 2.start, 3.intr_clr, 4.irq_enable, 5.intr_mask
     irq_disable(SHA512_IRQN);
 
@@ -140,7 +131,7 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     }
 #endif
 
-    if (is384) 
+    if (is384)
     {
         ctx->is384 = true;
         isFirst = true;
@@ -291,15 +282,19 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 
-#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+static int otbn_err_to_mbedtls(int err)
+{
+    if (err == 0) {
+        return 0;
+    }
+    return MBEDTLS_ERR_LS_OTBN_BUSY;
+}
 
-static mbedtls_sha512_context* ls_sha_ctx = NULL;
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 
 void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha512_context));
-    
-    // k_sem_init(&wait_complete,0,1);
 }
 
 void mbedtls_sha512_free(mbedtls_sha512_context *ctx)
@@ -313,7 +308,6 @@ void mbedtls_sha512_free(mbedtls_sha512_context *ctx)
 
 int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
 {
-    int err = 0;
 #if defined(MBEDTLS_SHA384_C) && defined(MBEDTLS_SHA512_C)
     if (is384 != 0 && is384 != 1) {
         return MBEDTLS_ERR_SHA512_BAD_INPUT_DATA;
@@ -328,86 +322,24 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     }
 #endif
 
-    err = mbedtls_ls_otbn_operation_init(((is384 == true)?OTBN_FIRMWARE_SHA384:OTBN_FIRMWARE_SHA512));
-    if(err)
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
+    ctx->is384 = is384 ? true : false;
 
-    if (is384) 
-    {
-        ctx->is384 = true;
-        ls_otbn_sha384_init_for_rtos(); // otbn init
-
-    } else {
-        ctx->is384 = false;
-        ls_otbn_sha512_init_for_rtos(); // otbn init
-
-    }
-
-    // k_sem_reset(&wait_complete);
-    return 0;
+    return otbn_err_to_mbedtls(otbn_hash_init(
+        &ctx->otbn,
+        is384 ? OTBN_HASH_ALGO_SHA384 : OTBN_HASH_ALGO_SHA512));
 }
 
 int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-
-    if(!ls_otbn_session_is_owner())
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
-
-    if (!ctx->start_calc_symbol)
-    {
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
-
-#if defined(MBEDTLS_SHA384_C)
-    if(ctx->is384)
-    {
-        ls_otbn_sha384_update_for_rtos((uint8_t *)input, ilen);
-    }else
-#endif //MBEDTLS_SHA384_C
-    {
-        ls_otbn_sha512_update_for_rtos((uint8_t *)input, ilen);
-    }
-    return 0;
+    return otbn_err_to_mbedtls(otbn_hash_update(&ctx->otbn, input, (uint32_t)ilen));
 }
 
 int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
                           unsigned char *output)
 {
-    assert(ls_sha_ctx == ctx);
-    unsigned int key;
-
-    if(!ls_otbn_session_is_owner())
-    {
-        return MBEDTLS_ERR_LS_OTBN_BUSY;
-    }
-
-#if defined(MBEDTLS_SHA384_C)
-    if(ctx->is384)
-    {
-        ls_otbn_sha384_final_for_rtos(output);
-    }else
-#endif //MBEDTLS_SHA384_C
-    {
-        ls_otbn_sha512_final_for_rtos(output);
-    }
-
-    /* The hash algorithm on the OTBN is currently executed using the blocking method only. */
-    key = irq_lock();
-
-    ls_sha_ctx = NULL;
-    ctx->start_calc_symbol = false;
-    ls_otbn_session_release();
-
-    irq_unlock(key);
-    return 0;
+    return otbn_err_to_mbedtls(otbn_hash_final(&ctx->otbn, output));
 }
 
 #else
@@ -438,6 +370,6 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
     return 0;
 }
 
-#endif /*CONFIG_MEBDTLS_ECDSA_LINKEDSEMI_DELEGATION_SERVER*/
+#endif /* CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT */
 
 #endif /* CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_OTBN_ALT */

@@ -5,8 +5,12 @@
 #include "mbedtls/private_access.h"
 
 #if defined(MBEDTLS_SHA256_ALT)
+#include "otbn_hash.h"
+
 typedef struct mbedtls_sha256_context {
     bool start_calc_symbol;
+    bool is224;
+    otbn_hash_ctx_t otbn;
 }
 mbedtls_sha256_context;
 

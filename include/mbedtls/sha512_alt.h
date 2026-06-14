@@ -3,9 +3,12 @@
 #include <stdint.h>
 #include <stdbool.h>
 #if defined(MBEDTLS_SHA512_ALT)
+#include "otbn_hash.h"
+
 typedef struct mbedtls_sha512_context {
     bool start_calc_symbol;
     bool is384;
+    otbn_hash_ctx_t otbn;
 }
 mbedtls_sha512_context;
 #endif /* MBEDTLS_SHA512_ALT */
