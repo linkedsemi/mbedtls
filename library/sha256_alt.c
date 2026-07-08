@@ -144,7 +144,7 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 #endif /*CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT*/
 
 #if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
-
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 #include "otbn_hash.h"
 
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
@@ -308,6 +308,8 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 {
     return 0;
 }
+#endif
+
 #endif /* CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT */
 
 
