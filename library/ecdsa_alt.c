@@ -48,7 +48,6 @@ LOG_MODULE_DECLARE(mbedtls,CONFIG_MBEDTLS_LOG_LEVEL);
 #define ASSERT_MBEDTLS(error) {if(error){__ASSERT_PRINT("mbedtls :stack is too small\n"); err = MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL; goto exit;}}
 
 void mbedtls_ls_otbn_moudle_init(void);
-void ls_otbn_session_release(void);
 int mbedtls_ls_otbn_operation_init(otbn_firmware_t firmware_id);
 otbn_firmware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve);
 int get_curve_otbn_info(uint32_t curve, ecc_remote_addr *info);
@@ -175,7 +174,7 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
         err |=ls_otbn_dmem_set(otbn_curve_info.remote_addr_d1,0,otbn_curve_info.curve_size);
         reverse_buf(buf,otbn_msg,use_size,otbn_curve_info.curve_size);
         err |=ls_otbn_dmem_write(otbn_curve_info.remote_addr_msg, (uint32_t *)otbn_msg, otbn_curve_info.curve_size);
-    }   
+    }
     if(err != 0)
     {
         err = MBEDTLS_ERR_ECP_IN_PROGRESS;
@@ -204,7 +203,7 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
 exit:
     mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
-}   
+}
 #endif
 
 
