@@ -6,6 +6,7 @@
 #include "mbedtls/error.h"
 #include "common.h"
 #include "ctr.h"
+#include <zephyr/sys/__assert.h>
 #if CONFIG_SOC_LSQSH
     #include "field_manipulate.h"
     #include "reg_crypt_type.h"
