@@ -147,7 +147,7 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     return 0;
 }
 
-int linkedsemi_sha512_update(mbedtls_sha512_context *ctx,
+static int linkedsemi_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
@@ -231,6 +231,11 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
 int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
                           unsigned char *output)
 {
+    if (ls_sha_ctx == NULL) {
+        mbedtls_mutex_lock(&doneLock);
+        ls_sha_ctx = ctx;
+        ctx->start_calc_symbol = true;
+    }
     assert(ls_sha_ctx == ctx);
     uint8_t *p_buffer = (uint8_t *)buffer;
     uint64_t bit_cnt = total_cnt * 8;
