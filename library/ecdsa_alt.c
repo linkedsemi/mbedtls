@@ -201,7 +201,7 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
     }
 
 exit:
-    mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
+    (void)mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
 }
 #endif
@@ -289,7 +289,7 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
     }
 
 exit:
-    mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
+    (void)mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
 }
 #endif
@@ -383,7 +383,7 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     }
 
 exit:
-    mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
+    (void)mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
     return err;
 }
 

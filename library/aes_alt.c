@@ -2,6 +2,7 @@
 #include "mbedtls/platform_util.h"
 #include "mbedtls/aes.h"
 #include <string.h>
+#include <zephyr/sys/__assert.h>
 #include <ls_hal_crypt.h>
 #include "mbedtls/error.h"
 #include "common.h"
