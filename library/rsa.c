@@ -48,6 +48,17 @@
 
 #include "mbedtls/platform.h"
 
+#if defined(MBEDTLS_RSA_OTBN_HOOK)
+int mbedtls_rsa_public_otbn(mbedtls_rsa_context *ctx,
+                            const unsigned char *input,
+                            unsigned char *output);
+int mbedtls_rsa_private_otbn(mbedtls_rsa_context *ctx,
+                             int (*f_rng)(void *, unsigned char *, size_t),
+                             void *p_rng,
+                             const unsigned char *input,
+                             unsigned char *output);
+#endif
+
 /*
  * Wrapper around mbedtls_asn1_get_mpi() that rejects zero.
  *
@@ -1259,6 +1270,14 @@ int mbedtls_rsa_public(mbedtls_rsa_context *ctx,
         goto cleanup;
     }
 
+#if defined(MBEDTLS_RSA_OTBN_HOOK)
+    ret = mbedtls_rsa_public_otbn(ctx, input, output);
+    if (ret == 0) {
+        goto cleanup;
+    }
+    ret = 0;
+#endif
+
     olen = ctx->len;
     MBEDTLS_MPI_CHK(mbedtls_mpi_exp_mod_unsafe(&T, &T, &ctx->E, &ctx->N, &ctx->RN));
     MBEDTLS_MPI_CHK(mbedtls_mpi_write_binary(&T, output, olen));
@@ -1481,6 +1500,14 @@ int mbedtls_rsa_private(mbedtls_rsa_context *ctx,
         ret = MBEDTLS_ERR_MPI_BAD_INPUT_DATA;
         goto cleanup;
     }
+
+#if defined(MBEDTLS_RSA_OTBN_HOOK)
+    ret = mbedtls_rsa_private_otbn(ctx, f_rng, p_rng, input, output);
+    if (ret == 0) {
+        goto cleanup;
+    }
+    ret = 0;
+#endif
 
     /*
      * Blinding
