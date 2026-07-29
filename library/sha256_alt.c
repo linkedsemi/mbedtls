@@ -1,12 +1,16 @@
 #include <assert.h>
+#include <stdio.h>
 #include <ls_hal_sha.h>
 #include "common.h"
 #include "mbedtls/sha256.h"
 #include "mbedtls/error.h"
 #include "../include/mbedtls/threading.h"
 #include "mbedtls/platform_util.h"
+#include "field_manipulate.h"
+#include <zephyr/kernel.h>
 
 #if CONFIG_SOC_LSQSH
+    #include "qsh.h"
     #if CONFIG_SHA256_CLOCK_RESET
         #include "reg_sysc_sec_cpu.h"
     #endif
@@ -21,6 +25,103 @@
 static mbedtls_threading_mutex_t doneLock;
 static mbedtls_sha256_context* ls_sha_ctx = NULL;
 
+#define SHA_BLOCK_SIZE 64
+#define SHA_PADDING_MOD 56
+
+#if defined(CONFIG_DMA)
+#include <zephyr/cache.h>
+
+struct k_sem dma_sem;
+struct k_sem sha224_sha256_sm3_sem;
+
+#define SHA224_SHA256_SM3_DMA_WAIT_TIMEOUT_MS 10000
+#define SHA224_SHA256_SM3_DMA_MAX_BLOCK_SIZE (2047*4/SHA_BLOCK_SIZE)
+#define SHA224_SHA256_SM3_DMA_MAX_BYTES      (SHA224_SHA256_SM3_DMA_MAX_BLOCK_SIZE * SHA_BLOCK_SIZE)
+
+void LSSHA224_SHA256_SM3_IRQHandler(void);
+static void dma_conf(uint32_t source_address, uint32_t dest_address, size_t ilen);
+static void sha_dma_stop(void);
+#endif
+
+static uint32_t current_word;
+static uint8_t current_block_bytes;
+static uint64_t total_length;
+static bool block_needs_start;
+
+static void byte_update(const uint8_t val)
+{
+    switch(current_block_bytes%sizeof(uint32_t))
+    {
+    case 0:
+        MODIFY_REG(current_word,0xff,val);
+    break;
+    case 1:
+        MODIFY_REG(current_word,0xff00,val<<8);
+    break;
+    case 2:
+        MODIFY_REG(current_word,0xff0000,val<<16);
+    break;
+    case 3:
+        MODIFY_REG(current_word,0xff000000,val<<24);
+    break;
+    }
+    current_block_bytes++;
+    if(current_block_bytes%sizeof(uint32_t)==0)
+    {
+        LSSHA->FIFO_DAT = current_word;
+    }
+}
+
+static void sha_start(bool end)
+{
+    if(current_block_bytes==SHA_BLOCK_SIZE)
+    {
+        current_block_bytes = 0;
+        while((LSSHA->INTR_R&SHA_FSM_END_INTR_MASK)==0);
+        LSSHA->INTR_C = SHA_FSM_END_INTR_MASK;
+        if(!end) {
+            LSSHA->SHA_START = 1;
+            block_needs_start = false;
+        }
+    }
+}
+
+int LSSHA_Final(uint8_t *digest)
+{
+    if(!current_block_bytes)
+    {
+        LSSHA->DMA_CTRL = 0;
+        REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, 0);
+        LSSHA->SHA_START = 1;
+    }
+    byte_update(0x80);
+    while(current_block_bytes!=SHA_PADDING_MOD)
+    {
+        sha_start(false);
+        byte_update(0x00);
+    }
+    byte_update(total_length>>56);
+    byte_update(total_length>>48);
+    byte_update(total_length>>40);
+    byte_update(total_length>>32);
+    byte_update(total_length>>24);
+    byte_update(total_length>>16);
+    byte_update(total_length>>8);
+    byte_update(total_length>>0);
+    sha_start(true);
+    uint8_t i;
+    uint8_t count = REG_FIELD_RD(LSSHA->SHA_CTRL,SHA_CALC_SHA224) != 1 ? SHA256_WORDS_NUM : SHA224_WORDS_NUM;
+    for (i = 0; i < count; ++i)
+    {
+        uint32_t val = LSSHA->SHA_RSLT[i];
+        *digest++ = val>>24;
+        *digest++ = val>>16;
+        *digest++ = val>>8;
+        *digest++ = val;
+    }
+    return 0;
+}
+
 void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
 {
     mbedtls_sha256_init(ctx);
@@ -28,6 +129,12 @@ void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
 
 int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
 {
+    LSSHA->INTR_M = 0;
+    LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
+    current_word = 0;
+    current_block_bytes = 0;
+    total_length = 0;
+    block_needs_start = true;
     HAL_LSSHA_SM3_Init();
     return 0;
 }
@@ -65,6 +172,14 @@ void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
             SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CALC_SHA_MASK;
         #endif
     #endif
+#if defined(CONFIG_DMA)
+    k_sem_init(&dma_sem, 0, 1);
+    k_sem_init(&sha224_sha256_sm3_sem, 0, 1);
+    #if CONFIG_SOC_LSQSH
+        IRQ_CONNECT(CALC_SHA_IRQN, 3, LSSHA224_SHA256_SM3_IRQHandler, NULL, 0);
+        irq_enable(CALC_SHA_IRQN);
+    #endif
+#endif
 }
 
 void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
@@ -99,6 +214,13 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     }
 #endif
 
+    LSSHA->INTR_M = 0;
+    LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
+    current_word = 0;
+    current_block_bytes = 0;
+    total_length = 0;
+    block_needs_start = true;
+
     if(is224)
     {
         HAL_LSSHA_SHA224_Init();
@@ -109,11 +231,15 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     return 0;
 }
 
+#if defined(CONFIG_DMA)
+static int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
+                                     const unsigned char *input, size_t ilen);
+#endif
+
 int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
     if (!ctx->start_calc_symbol)
     {
         mbedtls_mutex_lock(&doneLock);
@@ -122,24 +248,274 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
     }
     assert(ls_sha_ctx == ctx);
 
-    ret = HAL_LSSHA_Update(input, ilen);
+    /* Fill any partial block left from the previous update with CPU copy.
+     * Only these bytes are accounted for here; the DMA path accounts for
+     * the remainder itself.
+     */
+    if (current_block_bytes != 0 && ilen > 0) {
+        size_t fill = ilen;
+        if (fill > (size_t)(SHA_BLOCK_SIZE - current_block_bytes)) {
+            fill = SHA_BLOCK_SIZE - current_block_bytes;
+        }
+        total_length += fill * 8;
+        while (fill--) {
+            byte_update(*input++);
+            ilen--;
+        }
+        if (current_block_bytes == SHA_BLOCK_SIZE) {
+            /* If the remainder is going through DMA, service the end of the
+             * just-completed block but do not kick the next one; _dma will
+             * issue SHA_START itself.
+             */
+            if (ilen >= SHA_BLOCK_SIZE && ((uintptr_t)input & 31U) == 0) {
+                while ((LSSHA->INTR_R & SHA_FSM_END_INTR_MASK) == 0);
+                LSSHA->INTR_C = SHA_FSM_END_INTR_MASK;
+                current_block_bytes = 0;
+                block_needs_start = true;
+            } else if (ilen > 0) {
+                sha_start(false);
+            } else {
+                /* This update ended exactly on a block boundary.  Don't
+                 * start an empty block; leave the state machine ready for
+                 * the next update / finish.
+                 */
+                while ((LSSHA->INTR_R & SHA_FSM_END_INTR_MASK) == 0);
+                LSSHA->INTR_C = SHA_FSM_END_INTR_MASK;
+                current_block_bytes = 0;
+                block_needs_start = true;
+            }
+        }
+    }
 
-    return ret;
+#if defined(CONFIG_DMA)
+    /* The restored _dma interface expects a source address that is both
+     * 4-byte aligned and cache-line aligned (the cache flush warns otherwise
+     * and may leave the DMA transfer hanging on this SoC).
+     */
+    if (ilen >= SHA_BLOCK_SIZE && ((uintptr_t)input & 31U) == 0) {
+        int dma_ret = mbedtls_sha256_update_dma(ctx, input, ilen);
+        if (dma_ret == 0 && current_block_bytes == 0) {
+            block_needs_start = true;
+        }
+        LSSHA->DMA_CTRL = 0;
+        sha_dma_stop();
+        return dma_ret;
+    }
+#endif /* CONFIG_DMA */
+
+    /* CPU copy for the remaining unaligned or short tail. */
+    total_length += ilen * 8;
+    REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, 0);
+    while (ilen > 0) {
+        if (block_needs_start) {
+            LSSHA->SHA_START = 1;
+            LSSHA->SHA_CTRL &= ~SHA_FST_DAT_MASK;
+            block_needs_start = false;
+        }
+        do {
+            byte_update(*input++);
+            ilen--;
+        } while (current_block_bytes != SHA_BLOCK_SIZE && ilen > 0);
+
+        if (current_block_bytes == SHA_BLOCK_SIZE) {
+            if (ilen > 0) {
+                sha_start(false);
+            } else {
+                /* End of this update on a block boundary: don't leave an
+                 * empty block started; wait for the completed block and let
+                 * the next update / finish issue SHA_START.
+                 */
+                while ((LSSHA->INTR_R & SHA_FSM_END_INTR_MASK) == 0);
+                LSSHA->INTR_C = SHA_FSM_END_INTR_MASK;
+                current_block_bytes = 0;
+                block_needs_start = true;
+            }
+        }
+    }
+
+    return 0;
 }
 
 int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
                           unsigned char *output)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+
+    /* finish() may be called immediately after starts() with no update() in
+     * between (e.g. hashing zero bytes).  In that case the mutex has not been
+     * taken yet, so take it now.
+     */
+    if (ls_sha_ctx == NULL) {
+        mbedtls_mutex_lock(&doneLock);
+        ls_sha_ctx = ctx;
+        ctx->start_calc_symbol = true;
+    }
     assert(ls_sha_ctx == ctx);
 
-    ret = HAL_LSSHA_Final(output);
+    ret = LSSHA_Final(output);
 
     ls_sha_ctx = NULL;
     ctx->start_calc_symbol = false;
     mbedtls_mutex_unlock(&doneLock);
     return ret;
 }
+
+void mbedtls_sha256_clone(mbedtls_sha256_context *dst,
+                          const mbedtls_sha256_context *src)
+{
+    *dst = *src;
+}
+
+#if defined(CONFIG_DMA)
+void mbedtls_sha256_init_dma(mbedtls_sha256_context *ctx)
+{
+    mbedtls_sha256_init(ctx);
+}
+
+int mbedtls_sha256_starts_dma(mbedtls_sha256_context *ctx, int is224)
+{
+    return mbedtls_sha256_starts(ctx, is224);
+}
+
+static int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
+                          const unsigned char *input, size_t ilen)
+{
+    if (!ctx->start_calc_symbol)
+    {
+        mbedtls_mutex_lock(&doneLock);
+        ls_sha_ctx = ctx;
+        ctx->start_calc_symbol = true;
+    }
+    assert(ls_sha_ctx == ctx);
+
+    /* The DMA flush on this SoC requires a cache-line aligned source address.
+     * If a caller passes an unaligned buffer, fall back to CPU copy instead of
+     * triggering the cache-line warning (and potential DMA hang).
+     */
+    if ((((uintptr_t)input) & (CONFIG_DCACHE_LINE_SIZE - 1)) != 0) {
+        LSSHA->DMA_CTRL = 0;
+        REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, 0);
+        while (ilen > 0) {
+            if (block_needs_start) {
+                LSSHA->SHA_START = 1;
+                LSSHA->SHA_CTRL &= ~SHA_FST_DAT_MASK;
+                block_needs_start = false;
+            }
+            do {
+                byte_update(*input++);
+                ilen--;
+            } while (current_block_bytes != SHA_BLOCK_SIZE && ilen > 0);
+            sha_start(false);
+        }
+        return 0;
+    }
+
+    uint32_t trans_count = ilen / SHA224_SHA256_SM3_DMA_MAX_BYTES;
+    uint32_t dma_calc_bytes;
+    uint32_t remain_len = 0;
+
+    const unsigned char *dma_start_input = NULL;
+    const unsigned char *remain_input = NULL;
+
+    total_length += ilen*8;
+
+    for(uint32_t i=0; i <= trans_count; i++)
+    {
+        if(trans_count == 0){
+            REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, ilen/SHA_BLOCK_SIZE - 1);
+            dma_calc_bytes = (ilen/SHA_BLOCK_SIZE)*SHA_BLOCK_SIZE;
+            remain_len = ilen - dma_calc_bytes;
+            dma_start_input = input;
+            remain_input = input + dma_calc_bytes;
+        }
+        else if((i == trans_count) && (trans_count > 0)){
+            dma_calc_bytes = ((ilen - SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count)/SHA_BLOCK_SIZE)*SHA_BLOCK_SIZE;
+            if(dma_calc_bytes < SHA_BLOCK_SIZE)
+            {
+                remain_len = ilen - SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count;
+                remain_input = input + SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count;
+            }else{
+                REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, dma_calc_bytes/SHA_BLOCK_SIZE - 1);
+                remain_len = ilen - (SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count) - dma_calc_bytes;
+                dma_start_input = input + SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count;
+                remain_input = dma_start_input + dma_calc_bytes;
+            }
+        }
+        else{
+            REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, SHA224_SHA256_SM3_DMA_MAX_BLOCK_SIZE-1);
+            dma_calc_bytes = SHA224_SHA256_SM3_DMA_MAX_BYTES;
+            dma_start_input = input + SHA224_SHA256_SM3_DMA_MAX_BYTES * i;
+        }
+
+        if(dma_calc_bytes >= SHA_BLOCK_SIZE)
+        {
+            LSSHA->INTR_C = 3;
+            LSSHA->INTR_M = SHA_FSM_END_INTR_MASK;
+            LSSHA->SHA_START = 1;
+            LSSHA->SHA_CTRL &= ~SHA_FST_DAT_MASK;
+            sys_cache_data_flush_range((void *)dma_start_input, dma_calc_bytes);
+            LSSHA->DMA_CTRL = 1;
+            dma_conf((uint32_t)dma_start_input, SEC_CALC_SHA_ADDR + 0x30, dma_calc_bytes);
+            k_sem_take(&dma_sem,  K_MSEC(SHA224_SHA256_SM3_DMA_WAIT_TIMEOUT_MS));
+            k_sem_take(&sha224_sha256_sm3_sem,  K_MSEC(SHA224_SHA256_SM3_DMA_WAIT_TIMEOUT_MS));
+        }
+    }
+
+    if(remain_len)
+    {
+        LSSHA->DMA_CTRL = 0;
+        REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, 0);
+        LSSHA->SHA_START = 1;
+        LSSHA->SHA_CTRL &= ~SHA_FST_DAT_MASK;
+        do{
+            byte_update(*remain_input);
+            remain_input++;
+            remain_len--;
+        }while(current_block_bytes!=SHA_BLOCK_SIZE&&remain_len);
+    }
+
+    /* If the CPU tail just completed a whole block, service its end and leave
+     * the state machine ready for the next update / finish.
+     */
+    if (current_block_bytes == SHA_BLOCK_SIZE) {
+        while ((LSSHA->INTR_R & SHA_FSM_END_INTR_MASK) == 0);
+        LSSHA->INTR_C = SHA_FSM_END_INTR_MASK;
+        current_block_bytes = 0;
+        block_needs_start = true;
+    }
+
+    return 0;
+}
+
+int mbedtls_sha256_finish_dma(mbedtls_sha256_context *ctx,
+                              unsigned char *output)
+{
+    return mbedtls_sha256_finish(ctx, output);
+}
+
+void mbedtls_sm3_init_dma(mbedtls_sha256_context *ctx)
+{
+    mbedtls_sm3_init(ctx);
+}
+
+int mbedtls_sm3_starts_dma(mbedtls_sha256_context *ctx)
+{
+    return mbedtls_sm3_starts(ctx);
+}
+
+int mbedtls_sm3_update_dma(mbedtls_sha256_context *ctx,
+                           const unsigned char *input,
+                           size_t ilen)
+{
+    return mbedtls_sha256_update_dma(ctx, input, ilen);
+}
+
+int mbedtls_sm3_finish_dma(mbedtls_sha256_context *ctx,
+                           unsigned char *output)
+{
+    return mbedtls_sm3_finish(ctx, output);
+}
+#endif /* CONFIG_DMA */
 
 #endif /*CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT*/
 
@@ -319,12 +695,14 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 #include <zephyr/drivers/dma/dma_dw.h>
 #include <soc_dma.h>
 #include "dmac_config.h"
-#include "field_manipulate.h"
 #include "reg_sha_type.h"
 #include "platform.h"
-#include <zephyr/cache.h>
-struct k_sem dma_sem;
-struct k_sem sha224_sha256_sm3_sem;
+#include "reg_base_addr.h"
+#include "reg_sysc_app_cpu.h"
+#include "ls_msp_dmacv3.h"
+
+extern struct k_sem dma_sem;
+extern struct k_sem sha224_sha256_sm3_sem;
 
 // #define CONFIG_SHA224_SHA256_SM3_DMA1
 #define CONFIG_SHA224_SHA256_SM3_DMA_CHANNEL 7
@@ -335,106 +713,9 @@ struct k_sem sha224_sha256_sm3_sem;
 #define dmac DEVICE_DT_GET(DT_NODELABEL(dmac2))
 #endif
 
-#define SHA_BLOCK_SIZE 64
-#define SHA224_SHA256_SM3_DMA_WAIT_TIMEOUT_MS 100000
-#define SHA224_SHA256_SM3_DMA_MAX_BLOCK_SIZE (2047*4/SHA_BLOCK_SIZE)
-#define SHA224_SHA256_SM3_DMA_MAX_BYTES      (SHA224_SHA256_SM3_DMA_MAX_BLOCK_SIZE * SHA_BLOCK_SIZE)
-#define SHA_PADDING_MOD 56
-
-static uint32_t current_word;
-static uint8_t current_block_bytes;
-static uint64_t total_length;
-
-static void sha_variable_init()
+static void sha_dma_stop(void)
 {
-    total_length = 0;
-    current_block_bytes = 0;
-    current_word = 0;
-}
-
-int LSSHA_SHA256_Init()
-{
-    LSSHA->SHA_CTRL = FIELD_BUILD(SHA_FST_DAT,1)|FIELD_BUILD(SHA_CALC_SHA224,0)|FIELD_BUILD(SHA_CALC_SM3,0);
-    sha_variable_init();
-    return HAL_OK;
-}
-
-int LSSHA_SHA224_Init()
-{
-    LSSHA->SHA_CTRL = FIELD_BUILD(SHA_FST_DAT,1)|FIELD_BUILD(SHA_CALC_SHA224,1)|FIELD_BUILD(SHA_CALC_SM3,0);
-    sha_variable_init();
-    return HAL_OK;
-}
-
-static void byte_update(const uint8_t val)
-{
-    switch(current_block_bytes%sizeof(uint32_t))
-    {
-    case 0:
-        MODIFY_REG(current_word,0xff,val);
-    break;
-    case 1:
-        MODIFY_REG(current_word,0xff00,val<<8);
-    break;
-    case 2:
-        MODIFY_REG(current_word,0xff0000,val<<16);
-    break;
-    case 3:
-        MODIFY_REG(current_word,0xff000000,val<<24);
-    break;
-    }
-    current_block_bytes++;
-    if(current_block_bytes%sizeof(uint32_t)==0)
-    {
-        LSSHA->FIFO_DAT = current_word;
-    }
-}
-
-static void sha_start(bool end)
-{
-    if(current_block_bytes==SHA_BLOCK_SIZE)
-    {
-        current_block_bytes = 0;
-        while((LSSHA->INTR_R&SHA_FSM_END_INTR_MASK)==0);
-        LSSHA->INTR_C = SHA_FSM_END_INTR_MASK;
-        if(!end)    LSSHA->SHA_START = 1;
-    }
-}
-
-int LSSHA_Final(uint8_t *digest)
-{
-    if(!current_block_bytes)
-    {
-        LSSHA->DMA_CTRL = 0;
-        REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, 0);
-        LSSHA->SHA_START = 1;
-    }
-    byte_update(0x80);
-    while(current_block_bytes!=SHA_PADDING_MOD)
-    {
-        sha_start(false);
-        byte_update(0x00);
-    }
-    byte_update(total_length>>56);
-    byte_update(total_length>>48);
-    byte_update(total_length>>40);
-    byte_update(total_length>>32);
-    byte_update(total_length>>24);
-    byte_update(total_length>>16);
-    byte_update(total_length>>8);
-    byte_update(total_length>>0);
-    sha_start(true);
-    uint8_t i;
-    uint8_t count = REG_FIELD_RD(LSSHA->SHA_CTRL,SHA_CALC_SHA224) != 1 ? SHA256_WORDS_NUM : SHA224_WORDS_NUM;
-    for (i = 0; i < count; ++i)
-    {
-        uint32_t val = LSSHA->SHA_RSLT[i];
-        *digest++ = val>>24;
-        *digest++ = val>>16;
-        *digest++ = val>>8;
-        *digest++ = val;
-    }
-    return 0;
+    dma_stop(dmac, CONFIG_SHA224_SHA256_SM3_DMA_CHANNEL);
 }
 
 void LSSHA224_SHA256_SM3_IRQHandler(void)
@@ -492,172 +773,4 @@ static void dma_conf(uint32_t source_address, uint32_t dest_address, size_t ilen
     }
 }
 
-void mbedtls_sha256_init_dma(mbedtls_sha256_context *ctx)
-{
-    memset(ctx, 0, sizeof(mbedtls_sha256_context));
-    mbedtls_mutex_init(&doneLock);
-    k_sem_init(&dma_sem, 0, 1);
-    k_sem_init(&sha224_sha256_sm3_sem, 0, 1);
-    #if CONFIG_SOC_LSQSH
-        #if CONFIG_SHA256_CLOCK_RESET
-            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
-            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CALC_SHA_MASK;
-            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CALC_SHA_MASK;
-            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CALC_SHA_MASK;
-        #endif
-        IRQ_CONNECT(CALC_SHA_IRQN, 3, LSSHA224_SHA256_SM3_IRQHandler,NULL, 0);
-        irq_enable(CALC_SHA_IRQN);
-    #endif
-}
-
-int mbedtls_sha256_starts_dma(mbedtls_sha256_context *ctx, int is224)
-{
-#if defined(MBEDTLS_SHA224_C) && defined(MBEDTLS_SHA256_C)
-    if (is224 != 0 && is224 != 1) {
-        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
-    }
-#elif defined(MBEDTLS_SHA256_C)
-    if (is224 != 0) {
-        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
-    }
-#else /* defined MBEDTLS_SHA224_C only */
-    if (is224 == 0) {
-        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
-    }
-#endif
-
-    LSSHA->INTR_M = 0;
-    LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
-
-    if(is224)
-    {
-        LSSHA_SHA224_Init();
-    }else{
-        LSSHA_SHA256_Init();
-    }
-
-    return 0;
-}
-
-int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
-                          const unsigned char *input, size_t ilen)
-{
-    if (!ctx->start_calc_symbol)
-    {
-        mbedtls_mutex_lock(&doneLock);
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
-
-    uint32_t trans_count = ilen / SHA224_SHA256_SM3_DMA_MAX_BYTES;
-    uint32_t dma_calc_bytes;
-    uint32_t remain_len = 0;
-
-    const unsigned char *dma_start_input = NULL;
-    const unsigned char *remain_input = NULL;
-
-    total_length += ilen*8;
-
-    for(uint32_t i=0; i <= trans_count; i++)
-    {
-        if(trans_count == 0){
-            REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, ilen/SHA_BLOCK_SIZE - 1);
-            dma_calc_bytes = (ilen/SHA_BLOCK_SIZE)*SHA_BLOCK_SIZE;
-            remain_len = ilen - dma_calc_bytes;
-            dma_start_input = input;
-            remain_input = input + dma_calc_bytes;
-        }
-        else if((i == trans_count) && (trans_count > 0)){
-            dma_calc_bytes = ((ilen - SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count)/SHA_BLOCK_SIZE)*SHA_BLOCK_SIZE;
-            if(dma_calc_bytes < SHA_BLOCK_SIZE)
-            {
-                remain_len = ilen - SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count;
-                remain_input = input + SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count;
-            }else{
-                REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, dma_calc_bytes/SHA_BLOCK_SIZE - 1);
-                remain_len = ilen - (SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count) - dma_calc_bytes;
-                dma_start_input = input + SHA224_SHA256_SM3_DMA_MAX_BYTES * trans_count;
-                remain_input = dma_start_input + dma_calc_bytes;
-            }
-        }
-        else{
-            REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, SHA224_SHA256_SM3_DMA_MAX_BLOCK_SIZE-1);
-            dma_calc_bytes = SHA224_SHA256_SM3_DMA_MAX_BYTES;
-            dma_start_input = input + SHA224_SHA256_SM3_DMA_MAX_BYTES * i;
-        }
-
-        if(dma_calc_bytes >= SHA_BLOCK_SIZE)
-        {
-            LSSHA->INTR_C = 3;
-            LSSHA->INTR_M = SHA_FSM_END_INTR_MASK;
-            LSSHA->SHA_START = 1;
-            LSSHA->SHA_CTRL &= ~SHA_FST_DAT_MASK;
-            sys_cache_data_flush_range((void *)dma_start_input, dma_calc_bytes);
-            LSSHA->DMA_CTRL = 1;
-            dma_conf((uint32_t)dma_start_input, SEC_CALC_SHA_ADDR + 0x30, dma_calc_bytes);
-            k_sem_take(&dma_sem,  K_MSEC(SHA224_SHA256_SM3_DMA_WAIT_TIMEOUT_MS));
-            k_sem_take(&sha224_sha256_sm3_sem,  K_MSEC(SHA224_SHA256_SM3_DMA_WAIT_TIMEOUT_MS));
-        }
-    }
-
-    if(remain_len)
-    {
-        LSSHA->DMA_CTRL = 0;
-        REG_FIELD_WR(LSSHA->SHA_CTRL, SHA_SHA_LEN, 0);
-        LSSHA->SHA_START = 1;
-        LSSHA->SHA_CTRL &= ~SHA_FST_DAT_MASK;
-        do{
-            byte_update(*remain_input);
-            remain_input++;
-            remain_len--;
-        }while(current_block_bytes!=SHA_BLOCK_SIZE&&remain_len);
-    }
-    return 0;
-}
-
-int mbedtls_sha256_finish_dma(mbedtls_sha256_context *ctx,
-                          unsigned char *output)
-{
-    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    assert(ls_sha_ctx == ctx);
-    ret = LSSHA_Final(output);
-    ls_sha_ctx = NULL;
-    ctx->start_calc_symbol = false;
-    mbedtls_mutex_unlock(&doneLock);
-    return ret;
-}
-
-int LSSHA_SM3_Init()
-{
-    LSSHA->SHA_CTRL = FIELD_BUILD(SHA_FST_DAT,1)|FIELD_BUILD(SHA_CALC_SHA224,0)|FIELD_BUILD(SHA_CALC_SM3,1);
-    sha_variable_init();
-    return HAL_OK;
-}
-
-void mbedtls_sm3_init_dma(mbedtls_sha256_context *ctx)
-{
-    mbedtls_sha256_init_dma(ctx);
-}
-
-int mbedtls_sm3_starts_dma(mbedtls_sha256_context *ctx)
-{
-    LSSHA->INTR_M = 0;
-    LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
-    LSSHA_SM3_Init();
-    return 0;
-}
-
-int mbedtls_sm3_update_dma(mbedtls_sha256_context *ctx,
-                        const unsigned char *input,
-                          size_t ilen)
-{
-    return mbedtls_sha256_update_dma(ctx, input, ilen);
-}
-
-int mbedtls_sm3_finish_dma(mbedtls_sha256_context *ctx,
-                          unsigned char *output)
-{
-    return mbedtls_sha256_finish_dma(ctx, output);
-}
 #endif /*CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT && CONFIG_DMA */
