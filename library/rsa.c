@@ -57,6 +57,12 @@ int mbedtls_rsa_private_otbn(mbedtls_rsa_context *ctx,
                              void *p_rng,
                              const unsigned char *input,
                              unsigned char *output);
+#if defined(MBEDTLS_RSA_OTBN_KEYGEN_HOOK)
+int mbedtls_rsa_gen_key_otbn(mbedtls_rsa_context *ctx,
+                             int (*f_rng)(void *, unsigned char *, size_t),
+                             void *p_rng,
+                             unsigned int nbits, int exponent);
+#endif
 #endif
 
 /*
@@ -1073,6 +1079,14 @@ int mbedtls_rsa_gen_key(mbedtls_rsa_context *ctx,
     mbedtls_mpi_init(&H);
     mbedtls_mpi_init(&G);
     mbedtls_mpi_init(&L);
+
+#if defined(MBEDTLS_RSA_OTBN_KEYGEN_HOOK)
+    ret = mbedtls_rsa_gen_key_otbn(ctx, f_rng, p_rng, nbits, exponent);
+    if (ret == 0) {
+        goto cleanup;
+    }
+    ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+#endif
 
     if (exponent < 3 || nbits % 2 != 0) {
         ret = MBEDTLS_ERR_RSA_BAD_INPUT_DATA;

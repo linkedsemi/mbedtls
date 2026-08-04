@@ -33,8 +33,6 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(mbedtls, CONFIG_MBEDTLS_LOG_LEVEL);
 
-#define OTBN_FIRMWARE_RSA_MODEXP    OTBN_FIRMWARE_USER_BASE
-
 static void reverse_buf(const uint8_t *in, uint8_t *out, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
@@ -72,6 +70,20 @@ static uint32_t rsa_otbn_select_mode(size_t n_bits, bool is_public, bool is_f4)
         case 4096:
             return MODE_RSA_4096_MODEXP;
         }
+    }
+
+    return 0;
+}
+
+static uint32_t rsa_otbn_select_keygen_mode(size_t n_bits)
+{
+    switch (n_bits) {
+    case 2048:
+        return MODE_RSA_KEYGEN_2048;
+    case 3072:
+        return MODE_RSA_KEYGEN_3072;
+    case 4096:
+        return MODE_RSA_KEYGEN_4096;
     }
 
     return 0;
@@ -261,6 +273,157 @@ int mbedtls_rsa_private_otbn(mbedtls_rsa_context *ctx,
     mbedtls_platform_zeroize(out_le, sizeof(out_le));
 
     return 0;
+}
+
+int mbedtls_rsa_gen_key_otbn(mbedtls_rsa_context *ctx,
+                             int (*f_rng)(void *, unsigned char *, size_t),
+                             void *p_rng,
+                             unsigned int nbits, int exponent)
+{
+    int ret = -ENOTSUP;
+    size_t num_bytes = nbits / 8;
+    uint32_t mode;
+    uint8_t n_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t d_le[MBEDTLS_MPI_MAX_SIZE];
+    mbedtls_mpi N, E, D, P, Q, DP, DQ, QP;
+    mbedtls_rsa_context tmp;
+
+    (void)f_rng;
+    (void)p_rng;
+
+    if (nbits != 2048 && nbits != 3072 && nbits != 4096) {
+        return -ENOTSUP;
+    }
+    if (exponent != 65537) {
+        return -ENOTSUP;
+    }
+
+    mode = rsa_otbn_select_keygen_mode(nbits);
+    if (mode == 0) {
+        return -EINVAL;
+    }
+
+    ret = ls_otbn_session_acquire(OTBN_FIRMWARE_RSA_KEYGEN, 10);
+    if (ret != 0) {
+        LOG_DBG("OTBN RSA keygen session acquire failed: %d", ret);
+        return -EBUSY;
+    }
+
+    ret = ls_otbn_imem_write(0, (uint32_t *)rsa_keygen_imem, RSA_KEYGEN_IMEM_SIZE);
+    if (ret != 0) {
+        LOG_ERR("Failed to load RSA keygen firmware: %d", ret);
+        goto exit;
+    }
+
+    ret = ls_otbn_dmem_set(0, 0, RSA_KEYGEN_DMEM_SIZE);
+    if (ret != 0) {
+        goto exit;
+    }
+
+    ret = ls_otbn_dmem_write(RSA_KEYGEN_OFFSET_MODE, &mode, sizeof(mode));
+    if (ret != 0) {
+        goto exit;
+    }
+
+    ret = ls_otbn_cmd(OTBN_CMD_EXECUTE);
+    if (ret != 0 || HAL_OTBN_Error_Bit_Get()) {
+        LOG_ERR("OTBN RSA keygen execution failed: %d", ret);
+        ret = -EIO;
+        goto exit;
+    }
+
+    ret = ls_otbn_dmem_read(RSA_KEYGEN_OFFSET_N, (uint32_t *)n_le, num_bytes);
+    if (ret != 0) {
+        goto exit;
+    }
+
+    ret = ls_otbn_dmem_read(RSA_KEYGEN_OFFSET_D, (uint32_t *)d_le, num_bytes);
+    if (ret != 0) {
+        goto exit;
+    }
+
+    mbedtls_mpi_init(&N);
+    mbedtls_mpi_init(&E);
+    mbedtls_mpi_init(&D);
+    mbedtls_mpi_init(&P);
+    mbedtls_mpi_init(&Q);
+    mbedtls_mpi_init(&DP);
+    mbedtls_mpi_init(&DQ);
+    mbedtls_mpi_init(&QP);
+    mbedtls_rsa_init(&tmp);
+
+    ret = mbedtls_mpi_read_binary_le(&N, n_le, num_bytes);
+    if (ret != 0) {
+        goto mpi_exit;
+    }
+
+    ret = mbedtls_mpi_lset(&E, exponent);
+    if (ret != 0) {
+        goto mpi_exit;
+    }
+
+    ret = mbedtls_mpi_read_binary_le(&D, d_le, num_bytes);
+    if (ret != 0) {
+        goto mpi_exit;
+    }
+
+    ret = mbedtls_rsa_deduce_primes(&N, &E, &D, &P, &Q);
+    if (ret != 0) {
+        goto mpi_exit;
+    }
+
+#if !defined(MBEDTLS_RSA_NO_CRT)
+    ret = mbedtls_rsa_deduce_crt(&P, &Q, &D, &DP, &DQ, &QP);
+    if (ret != 0) {
+        goto mpi_exit;
+    }
+#endif
+
+    tmp.len = num_bytes;
+    mbedtls_mpi_swap(&tmp.N, &N);
+    mbedtls_mpi_swap(&tmp.E, &E);
+    mbedtls_mpi_swap(&tmp.D, &D);
+    mbedtls_mpi_swap(&tmp.P, &P);
+    mbedtls_mpi_swap(&tmp.Q, &Q);
+#if !defined(MBEDTLS_RSA_NO_CRT)
+    mbedtls_mpi_swap(&tmp.DP, &DP);
+    mbedtls_mpi_swap(&tmp.DQ, &DQ);
+    mbedtls_mpi_swap(&tmp.QP, &QP);
+#endif
+
+    ret = mbedtls_rsa_check_privkey(&tmp);
+    if (ret == 0) {
+        ctx->len = num_bytes;
+        mbedtls_mpi_swap(&ctx->N, &tmp.N);
+        mbedtls_mpi_swap(&ctx->E, &tmp.E);
+        mbedtls_mpi_swap(&ctx->D, &tmp.D);
+        mbedtls_mpi_swap(&ctx->P, &tmp.P);
+        mbedtls_mpi_swap(&ctx->Q, &tmp.Q);
+#if !defined(MBEDTLS_RSA_NO_CRT)
+        mbedtls_mpi_swap(&ctx->DP, &tmp.DP);
+        mbedtls_mpi_swap(&ctx->DQ, &tmp.DQ);
+        mbedtls_mpi_swap(&ctx->QP, &tmp.QP);
+#endif
+    }
+
+mpi_exit:
+    mbedtls_rsa_free(&tmp);
+    mbedtls_mpi_free(&N);
+    mbedtls_mpi_free(&E);
+    mbedtls_mpi_free(&D);
+    mbedtls_mpi_free(&P);
+    mbedtls_mpi_free(&Q);
+    mbedtls_mpi_free(&DP);
+    mbedtls_mpi_free(&DQ);
+    mbedtls_mpi_free(&QP);
+
+exit:
+    ls_otbn_session_release();
+
+    mbedtls_platform_zeroize(n_le, sizeof(n_le));
+    mbedtls_platform_zeroize(d_le, sizeof(d_le));
+
+    return ret;
 }
 
 #endif /* MBEDTLS_RSA_C && MBEDTLS_RSA_OTBN_HOOK && !delegation client */
