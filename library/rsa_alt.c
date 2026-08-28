@@ -42,12 +42,20 @@ static void reverse_buf(const uint8_t *in, uint8_t *out, size_t len)
 
 static int rsa_otbn_load_app(void)
 {
+    int ret;
+
     if (!HAL_OTBN_In_Idle_State()) {
         LOG_ERR("OTBN not idle before loading RSA firmware");
         return -EBUSY;
     }
 
-    return ls_otbn_imem_write(0, (uint32_t *)rsa_imem, RSA_IMEM_SIZE);
+    ret = ls_otbn_imem_write(0, (uint32_t *)rsa_imem, RSA_IMEM_SIZE);
+    if (ret == 0) {
+        /* The IMEM image changed: publish it via the shared firmware state
+         * so other modules (hash/ECC) reload on their next use. */
+        ls_otbn_imem_firmware_confirm(OTBN_FIRMWARE_RSA_MODEXP);
+    }
+    return ret;
 }
 
 static uint32_t rsa_otbn_select_mode(size_t n_bits, bool is_public, bool is_f4)
@@ -577,6 +585,9 @@ int mbedtls_rsa_gen_key_otbn(mbedtls_rsa_context *ctx,
         LOG_ERR("Failed to load RSA keygen firmware: %d", ret);
         goto exit;
     }
+    /* The IMEM image changed: publish it via the shared firmware state
+     * so other modules (hash/ECC) reload on their next use. */
+    ls_otbn_imem_firmware_confirm(OTBN_FIRMWARE_RSA_KEYGEN);
 
     ret = ls_otbn_dmem_set(0, 0, RSA_KEYGEN_DMEM_SIZE);
     if (ret != 0) {
