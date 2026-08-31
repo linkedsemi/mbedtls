@@ -16,14 +16,24 @@
     #endif
 #endif
 
-#if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
+#if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_OTBN_ALT)||defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT)
 #include "otbn_hash.h"
 #endif
 
-#if defined(CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT)
+#if defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT)||defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT)
+#include "mbedtls/sm3_alt.h"
+#endif
+
+#if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT) || defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT)
 
 static mbedtls_threading_mutex_t doneLock;
-static mbedtls_sha256_context* ls_sha_ctx = NULL;
+static bool done_lock_initialized = false;
+
+#if defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT)
+#define LS_SHA_ALT_CTX_TYPE mbedtls_sm3_context
+#else
+#define LS_SHA_ALT_CTX_TYPE mbedtls_sha256_context
+#endif
 
 #define SHA_BLOCK_SIZE 64
 #define SHA_PADDING_MOD 56
@@ -47,6 +57,22 @@ static uint32_t current_word;
 static uint8_t current_block_bytes;
 static uint64_t total_length;
 static bool block_needs_start;
+
+static void ls_sha_hw_save_state(LS_SHA_ALT_CTX_TYPE *c)
+{
+    c->hw_current_word = current_word;
+    c->hw_current_block_bytes = current_block_bytes;
+    c->hw_total_length = total_length;
+    c->hw_block_needs_start = block_needs_start;
+}
+
+static void ls_sha_hw_restore_state(LS_SHA_ALT_CTX_TYPE *c)
+{
+    current_word = c->hw_current_word;
+    current_block_bytes = c->hw_current_block_bytes;
+    total_length = c->hw_total_length;
+    block_needs_start = c->hw_block_needs_start;
+}
 
 static void byte_update(const uint8_t val)
 {
@@ -122,46 +148,13 @@ int LSSHA_Final(uint8_t *digest)
     return 0;
 }
 
-void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
+static void ls_sha_hw_init(void)
 {
-    mbedtls_sha256_init(ctx);
-}
-
-int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
-{
-    LSSHA->INTR_M = 0;
-    LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
-    current_word = 0;
-    current_block_bytes = 0;
-    total_length = 0;
-    block_needs_start = true;
-    HAL_LSSHA_SM3_Init();
-    return 0;
-}
-
-int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
-                          const unsigned char *input,
-                          size_t ilen)
-{
-    return mbedtls_sha256_update(ctx, input, ilen);
-}
-
-int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
-                          unsigned char *output)
-{
-    return mbedtls_sha256_finish(ctx, output);
-}
-
-void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
-{
-    mbedtls_sha256_free(ctx);
-}
-
-void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
-{
-    memset(ctx, 0, sizeof(mbedtls_sha256_context));
     // mbedtls_zephyr_threading_init();
-    mbedtls_mutex_init(&doneLock);
+    if (!done_lock_initialized) {
+        mbedtls_mutex_init(&doneLock);
+        done_lock_initialized = true;
+    }
     #if CONFIG_SOC_LS1010
         HAL_LSSHA_Init();
     #elif CONFIG_SOC_LSQSH
@@ -182,13 +175,8 @@ void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
 #endif
 }
 
-void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
+static void ls_sha_hw_deinit(void)
 {
-    if (ctx == NULL) {
-        return;
-    }
-
-    mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha256_context));
     #if CONFIG_SOC_LS1010
         HAL_LSSHA_DeInit();
     #elif CONFIG_SOC_LSQSH
@@ -196,6 +184,90 @@ void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
             SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
         #endif
     #endif
+}
+
+static int ls_sha_hw_update_core(LS_SHA_ALT_CTX_TYPE *c,
+                                 const unsigned char *input,
+                                 size_t ilen);
+static int ls_sha_hw_update_dma_core(LS_SHA_ALT_CTX_TYPE *c,
+                                     const unsigned char *input,
+                                     size_t ilen);
+static int ls_sha_hw_update(void *ctx,
+                            const unsigned char *input,
+                            size_t ilen);
+static int ls_sha_hw_update_dma(void *ctx,
+                                const unsigned char *input,
+                                size_t ilen);
+static int ls_sha_hw_final(void *ctx,
+                           unsigned char *output);
+
+#if defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT)
+
+void mbedtls_sm3_init(mbedtls_sm3_context *ctx)
+{
+    memset(ctx, 0, sizeof(*ctx));
+    ls_sha_hw_init();
+}
+
+int mbedtls_sm3_starts(mbedtls_sm3_context *ctx)
+{
+    /* starts 重置引擎级静态状态并切换算法（HAL_LSSHA_SM3_Init），必须在锁内
+     * 执行，防止打断其他在途流式调用；随后把初始状态存入本 ctx 快照，
+     * 之后该 ctx 的 update/final 从快照恢复。 */
+    mbedtls_mutex_lock(&doneLock);
+    LSSHA->INTR_M = 0;
+    LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
+    current_word = 0;
+    current_block_bytes = 0;
+    total_length = 0;
+    block_needs_start = true;
+    HAL_LSSHA_SM3_Init();
+    ls_sha_hw_save_state((LS_SHA_ALT_CTX_TYPE *)ctx);
+    mbedtls_mutex_unlock(&doneLock);
+    return 0;
+}
+
+int mbedtls_sm3_update(mbedtls_sm3_context *ctx,
+                       const unsigned char *input,
+                       size_t ilen)
+{
+    return ls_sha_hw_update((mbedtls_sha256_context *)ctx, input, ilen);
+}
+
+int mbedtls_sm3_finish(mbedtls_sm3_context *ctx,
+                       unsigned char *output)
+{
+    return ls_sha_hw_final((mbedtls_sha256_context *)ctx, output);
+}
+
+void mbedtls_sm3_free(mbedtls_sm3_context *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    mbedtls_platform_zeroize(ctx, sizeof(*ctx));
+    ls_sha_hw_deinit();
+}
+
+#endif /* CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT */
+
+#if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT)
+
+void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
+{
+    memset(ctx, 0, sizeof(mbedtls_sha256_context));
+    ls_sha_hw_init();
+}
+
+void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha256_context));
+    ls_sha_hw_deinit();
 }
 
 int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
@@ -214,6 +286,7 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     }
 #endif
 
+    mbedtls_mutex_lock(&doneLock);
     LSSHA->INTR_M = 0;
     LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
     current_word = 0;
@@ -227,26 +300,31 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     }else{
         HAL_LSSHA_SHA256_Init();
     }
+    ls_sha_hw_save_state((LS_SHA_ALT_CTX_TYPE *)ctx);
+    mbedtls_mutex_unlock(&doneLock);
 
     return 0;
 }
-
-#if defined(CONFIG_DMA)
-static int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
-                                     const unsigned char *input, size_t ilen);
-#endif
 
 int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
-    if (!ctx->start_calc_symbol)
-    {
-        mbedtls_mutex_lock(&doneLock);
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
+    return ls_sha_hw_update(ctx, input, ilen);
+}
+
+int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
+                          unsigned char *output)
+{
+    return ls_sha_hw_final(ctx, output);
+}
+
+#endif /* CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT */
+
+static int ls_sha_hw_update_core(LS_SHA_ALT_CTX_TYPE *c,
+                                 const unsigned char *input,
+                                 size_t ilen)
+{
 
     /* Fill any partial block left from the previous update with CPU copy.
      * Only these bytes are accounted for here; the DMA path accounts for
@@ -293,7 +371,7 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
      * and may leave the DMA transfer hanging on this SoC).
      */
     if (ilen >= SHA_BLOCK_SIZE && ((uintptr_t)input & 31U) == 0) {
-        int dma_ret = mbedtls_sha256_update_dma(ctx, input, ilen);
+        int dma_ret = ls_sha_hw_update_dma_core(c, input, ilen);
         if (dma_ret == 0 && current_block_bytes == 0) {
             block_needs_start = true;
         }
@@ -336,58 +414,39 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
     return 0;
 }
 
-int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
-                          unsigned char *output)
+static int ls_sha_hw_update(void *ctx,
+                            const unsigned char *input,
+                            size_t ilen)
 {
-    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    LS_SHA_ALT_CTX_TYPE *c = (LS_SHA_ALT_CTX_TYPE *)ctx;
+    int ret;
 
-    /* finish() may be called immediately after starts() with no update() in
-     * between (e.g. hashing zero bytes).  In that case the mutex has not been
-     * taken yet, so take it now.
-     */
-    if (ls_sha_ctx == NULL) {
-        mbedtls_mutex_lock(&doneLock);
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
-
-    ret = LSSHA_Final(output);
-
-    ls_sha_ctx = NULL;
-    ctx->start_calc_symbol = false;
+    mbedtls_mutex_lock(&doneLock);
+    ls_sha_hw_restore_state(c);
+    ret = ls_sha_hw_update_core(c, input, ilen);
+    ls_sha_hw_save_state(c);
     mbedtls_mutex_unlock(&doneLock);
     return ret;
 }
 
-void mbedtls_sha256_clone(mbedtls_sha256_context *dst,
-                          const mbedtls_sha256_context *src)
+static int ls_sha_hw_final(void *ctx,
+                           unsigned char *output)
 {
-    *dst = *src;
+    LS_SHA_ALT_CTX_TYPE *c = (LS_SHA_ALT_CTX_TYPE *)ctx;
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+
+
+    mbedtls_mutex_lock(&doneLock);
+    ls_sha_hw_restore_state(c);
+    ret = LSSHA_Final(output);
+    mbedtls_mutex_unlock(&doneLock);
+    return ret;
 }
 
 #if defined(CONFIG_DMA)
-void mbedtls_sha256_init_dma(mbedtls_sha256_context *ctx)
+static int ls_sha_hw_update_dma_core(LS_SHA_ALT_CTX_TYPE *c,
+                                     const unsigned char *input, size_t ilen)
 {
-    mbedtls_sha256_init(ctx);
-}
-
-int mbedtls_sha256_starts_dma(mbedtls_sha256_context *ctx, int is224)
-{
-    return mbedtls_sha256_starts(ctx, is224);
-}
-
-static int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
-                          const unsigned char *input, size_t ilen)
-{
-    if (!ctx->start_calc_symbol)
-    {
-        mbedtls_mutex_lock(&doneLock);
-        ls_sha_ctx = ctx;
-        ctx->start_calc_symbol = true;
-    }
-    assert(ls_sha_ctx == ctx);
-
     /* The DMA flush on this SoC requires a cache-line aligned source address.
      * If a caller passes an unaligned buffer, fall back to CPU copy instead of
      * triggering the cache-line warning (and potential DMA hang).
@@ -487,39 +546,79 @@ static int mbedtls_sha256_update_dma(mbedtls_sha256_context *ctx,
     return 0;
 }
 
+static int ls_sha_hw_update_dma(void *ctx,
+                                const unsigned char *input, size_t ilen)
+{
+    LS_SHA_ALT_CTX_TYPE *c = (LS_SHA_ALT_CTX_TYPE *)ctx;
+    int ret;
+
+    mbedtls_mutex_lock(&doneLock);
+    ls_sha_hw_restore_state(c);
+    ret = ls_sha_hw_update_dma_core(c, input, ilen);
+    ls_sha_hw_save_state(c);
+    mbedtls_mutex_unlock(&doneLock);
+    return ret;
+}
+#endif /* CONFIG_DMA */
+
+#if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT)
+
+void mbedtls_sha256_clone(mbedtls_sha256_context *dst,
+                          const mbedtls_sha256_context *src)
+{
+    *dst = *src;
+}
+
+#if defined(CONFIG_DMA)
+void mbedtls_sha256_init_dma(mbedtls_sha256_context *ctx)
+{
+    mbedtls_sha256_init(ctx);
+}
+
+int mbedtls_sha256_starts_dma(mbedtls_sha256_context *ctx, int is224)
+{
+    return mbedtls_sha256_starts(ctx, is224);
+}
+
 int mbedtls_sha256_finish_dma(mbedtls_sha256_context *ctx,
                               unsigned char *output)
 {
-    return mbedtls_sha256_finish(ctx, output);
+    return ls_sha_hw_final(ctx, output);
 }
+#endif /* CONFIG_DMA */
 
-void mbedtls_sm3_init_dma(mbedtls_sha256_context *ctx)
+#endif /* CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT */
+
+#if defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT) && defined(CONFIG_DMA)
+
+void mbedtls_sm3_init_dma(mbedtls_sm3_context *ctx)
 {
     mbedtls_sm3_init(ctx);
 }
 
-int mbedtls_sm3_starts_dma(mbedtls_sha256_context *ctx)
+int mbedtls_sm3_starts_dma(mbedtls_sm3_context *ctx)
 {
     return mbedtls_sm3_starts(ctx);
 }
 
-int mbedtls_sm3_update_dma(mbedtls_sha256_context *ctx,
+int mbedtls_sm3_update_dma(mbedtls_sm3_context *ctx,
                            const unsigned char *input,
                            size_t ilen)
 {
-    return mbedtls_sha256_update_dma(ctx, input, ilen);
+    return ls_sha_hw_update_dma((mbedtls_sha256_context *)ctx, input, ilen);
 }
 
-int mbedtls_sm3_finish_dma(mbedtls_sha256_context *ctx,
+int mbedtls_sm3_finish_dma(mbedtls_sm3_context *ctx,
                            unsigned char *output)
 {
     return mbedtls_sm3_finish(ctx, output);
 }
-#endif /* CONFIG_DMA */
 
-#endif /*CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT*/
+#endif /* CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT && CONFIG_DMA */
 
-#if defined(CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT)
+#endif /* CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT || CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT */
+
+#if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_OTBN_ALT)||defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT)
 #if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 #include "otbn_hash.h"
 
@@ -532,39 +631,73 @@ static int otbn_err_to_mbedtls(int err)
     }
     return MBEDTLS_ERR_LS_OTBN_BUSY;
 }
+#endif
 
-void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
+#if defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT)
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+void mbedtls_sm3_init(mbedtls_sm3_context *ctx)
 {
-    memset(ctx, 0, sizeof(mbedtls_sha256_context));
+    memset(ctx, 0, sizeof(mbedtls_sm3_context));
 }
 
-int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
+int mbedtls_sm3_starts(mbedtls_sm3_context *ctx)
 {
     return otbn_err_to_mbedtls(otbn_hash_init(&ctx->otbn, OTBN_HASH_ALGO_SM3));
 }
 
-int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
-                          const unsigned char *input,
-                          size_t ilen)
+int mbedtls_sm3_update(mbedtls_sm3_context *ctx,
+                       const unsigned char *input,
+                       size_t ilen)
 {
     return otbn_err_to_mbedtls(otbn_hash_update(&ctx->otbn, input, (uint32_t)ilen));
 }
 
-int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
-                          unsigned char *output)
+int mbedtls_sm3_finish(mbedtls_sm3_context *ctx,
+                       unsigned char *output)
 {
     return otbn_err_to_mbedtls(otbn_hash_final(&ctx->otbn, output));
 }
 
-void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
+void mbedtls_sm3_free(mbedtls_sm3_context *ctx)
 {
     if (ctx == NULL) {
         return;
     }
 
-    mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha256_context));
+    mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sm3_context));
+}
+#else
+
+void mbedtls_sm3_init(mbedtls_sm3_context *ctx)
+{
 }
 
+int mbedtls_sm3_starts(mbedtls_sm3_context *ctx)
+{
+    return 0;
+}
+
+int mbedtls_sm3_update(mbedtls_sm3_context *ctx,
+                       const unsigned char *input,
+                       size_t ilen)
+{
+    return 0;
+}
+
+int mbedtls_sm3_finish(mbedtls_sm3_context *ctx,
+                       unsigned char *output)
+{
+    return 0;
+}
+
+void mbedtls_sm3_free(mbedtls_sm3_context *ctx)
+{
+}
+#endif
+#endif /* CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT */
+
+#if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_OTBN_ALT)
+#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha256_context));
@@ -633,32 +766,6 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
 
 #else
 
-void mbedtls_sm3_init(mbedtls_sha256_context *ctx)
-{
-}
-
-int mbedtls_sm3_starts(mbedtls_sha256_context *ctx)
-{
-    return 0;
-}
-
-int mbedtls_sm3_update(mbedtls_sha256_context *ctx,
-                          const unsigned char *input,
-                          size_t ilen)
-{
-    return 0;
-}
-
-int mbedtls_sm3_finish(mbedtls_sha256_context *ctx,
-                          unsigned char *output)
-{
-    return 0;
-}
-
-void mbedtls_sm3_free(mbedtls_sha256_context *ctx)
-{
-}
-
 void mbedtls_sha256_init(mbedtls_sha256_context *ctx)
 {
 }
@@ -685,11 +792,12 @@ int mbedtls_sha256_finish(mbedtls_sha256_context *ctx,
     return 0;
 }
 #endif
+#endif /* CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_OTBN_ALT */
 
-#endif /* CONFIG_MBEDTLS_SHA256_SM3_LINKEDSEMI_OTBN_ALT */
+#endif /* CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_OTBN_ALT || CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT */
 
 
-#if defined(CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT) && defined(CONFIG_DMA)
+#if (defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT) || defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT)) && defined(CONFIG_DMA)
 
 #include <zephyr/drivers/dma.h>
 #include <zephyr/drivers/dma/dma_dw.h>
@@ -773,4 +881,4 @@ static void dma_conf(uint32_t source_address, uint32_t dest_address, size_t ilen
     }
 }
 
-#endif /*CONFIG_MBEDTLS_SHA224_SHA256_SM3_LINKEDSEMI_HARDWARE_ALT && CONFIG_DMA */
+#endif /*(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_HARDWARE_ALT || CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT) && CONFIG_DMA */
