@@ -42,7 +42,7 @@
 #include <zephyr/kernel.h>
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(mbedtls,CONFIG_MBEDTLS_LOG_LEVEL);
+LOG_MODULE_DECLARE(mbedtls_otbn, CONFIG_LINKEDSEMI_OTBN_LOG_LEVEL);
 #define MAX_ECC_CURVE_SIZE   64
 #define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
 #define ASSERT_MBEDTLS(error) {if(error){__ASSERT_PRINT("mbedtls :stack is too small\n"); err = MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL; goto exit;}}

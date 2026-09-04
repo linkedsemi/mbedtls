@@ -31,7 +31,7 @@
 #include <string.h>
 
 #include <zephyr/logging/log.h>
-LOG_MODULE_DECLARE(mbedtls, CONFIG_MBEDTLS_LOG_LEVEL);
+LOG_MODULE_DECLARE(mbedtls_otbn, CONFIG_LINKEDSEMI_OTBN_LOG_LEVEL);
 
 static void reverse_buf(const uint8_t *in, uint8_t *out, size_t len)
 {
