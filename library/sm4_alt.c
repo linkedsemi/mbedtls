@@ -1,4 +1,5 @@
 #include "mbedtls/platform_util.h"
+#include <errno.h>
 #include <string.h>
 #include "mbedtls/sm4_alt.h"
 
@@ -144,8 +145,7 @@ int mbedtls_sm4_ecb_decrypt(mbedtls_sm4_context *ctx, unsigned char* output, con
 
 int mbedtls_sm4_ctr_crypto(mbedtls_sm4_context *ctx, unsigned char* output, const unsigned char* input, size_t ilen)
 {
-    HAL_SM4_CTR_Crypt(ctx->iv, input, ilen, output);
-    return 0;
+	return HAL_SM4_CTR_Crypt(ctx->iv, input, ilen, output) == HAL_OK ? 0 : -EINVAL;
 }
 
 #endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT */
