@@ -55,7 +55,13 @@ int mbedtls_sm4_setiv(mbedtls_sm4_context *ctx, const unsigned char* iv)
 
 int mbedtls_sm4_ecb_encrypt(mbedtls_sm4_context *ctx, unsigned char* output, const unsigned char* input, size_t ilen)
 {
-    __ASSERT_NO_MSG(ilen % 16 == 0);
+    if (ctx == NULL || output == NULL || input == NULL) {
+        return -EINVAL;
+    }
+
+    if (ilen == 0 || ilen % 16 != 0) {
+        return -EINVAL;
+    }
 
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
@@ -100,7 +106,13 @@ int mbedtls_sm4_ecb_encrypt(mbedtls_sm4_context *ctx, unsigned char* output, con
 
 int mbedtls_sm4_ecb_decrypt(mbedtls_sm4_context *ctx, unsigned char* output, const unsigned char* input, size_t ilen)
 {
-    __ASSERT_NO_MSG(ilen % 16 == 0);
+    if (ctx == NULL || output == NULL || input == NULL) {
+        return -EINVAL;
+    }
+
+    if (ilen == 0 || ilen % 16 != 0) {
+        return -EINVAL;
+    }
 
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
