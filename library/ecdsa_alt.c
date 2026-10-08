@@ -232,9 +232,19 @@ int mbedtls_ecdsa_verify(mbedtls_ecp_group *grp,
     uint32_t mode = LS_OTBN_MODE_VERIFY;
     uint8_t cc_buf[MAX_ECC_CURVE_SIZE];
     uint8_t r_x[MAX_ECC_CURVE_SIZE];
-    size_t n_size = (grp->nbits + 7) / 8;
-    size_t use_size = blen > n_size ? n_size : blen;
+    size_t n_size;
+    size_t use_size;
     ecc_remote_addr otbn_curve_info;
+
+    /* NULL group is not a legal input (documented: grp must be initialized
+     * and have group parameters set); reject it instead of faulting on the
+     * grp->nbits / grp->id dereferences below. */
+    if (grp == NULL) {
+        return MBEDTLS_ERR_ECP_BAD_INPUT_DATA;
+    }
+
+    n_size = (grp->nbits + 7) / 8;
+    use_size = blen > n_size ? n_size : blen;
 
     if(!(grp->id == MBEDTLS_ECP_DP_SECP384R1 || grp->id == MBEDTLS_ECP_DP_SECP256R1 || grp->id == MBEDTLS_ECP_DP_SM2))
     {

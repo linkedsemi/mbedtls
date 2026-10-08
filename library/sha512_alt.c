@@ -131,6 +131,12 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     }
 #endif
 
+    /* NULL context is not a legal input (documented: ctx must be initialized);
+     * reject it instead of faulting on the dereference below. */
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_SHA512_BAD_INPUT_DATA;
+    }
+
     if (is384)
     {
         ctx->is384 = true;
@@ -209,6 +215,12 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
+    /* A NULL input is only legal together with ilen == 0 (documented); with
+     * ilen > 0 the SRAM staging copy below would read from address 0. */
+    if (input == NULL && ilen > 0) {
+        return MBEDTLS_ERR_SHA512_BAD_INPUT_DATA;
+    }
+
     if (is_sram_address((uint32_t)input) && ((uint32_t)input % 4) == 0) {
         linkedsemi_sha512_update(ctx, input, ilen);
     } else {
@@ -327,6 +339,12 @@ int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
     }
 #endif
 
+    /* NULL context is not a legal input (documented: ctx must be initialized);
+     * reject it instead of faulting on the dereference below. */
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_SHA512_BAD_INPUT_DATA;
+    }
+
     ctx->is384 = is384 ? true : false;
 
     return otbn_err_to_mbedtls(otbn_hash_init(
@@ -338,6 +356,12 @@ int mbedtls_sha512_update(mbedtls_sha512_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
+    /* A NULL input is only legal together with ilen == 0 (documented); with
+     * ilen > 0 the OTBN hash engine would be handed a NULL buffer. */
+    if (input == NULL && ilen > 0) {
+        return MBEDTLS_ERR_SHA512_BAD_INPUT_DATA;
+    }
+
     return otbn_err_to_mbedtls(otbn_hash_update(&ctx->otbn, input, (uint32_t)ilen));
 }
 

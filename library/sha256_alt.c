@@ -286,6 +286,12 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     }
 #endif
 
+    /* NULL context is not a legal input (documented: ctx must be initialized);
+     * reject it instead of faulting on the dereference below. */
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
+    }
+
     mbedtls_mutex_lock(&doneLock);
     LSSHA->INTR_M = 0;
     LSSHA->INTR_C = SHA_FSM_END_INTR_MASK | SHA_FSM_EMPT_INTR_MASK;
@@ -310,6 +316,12 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
+    /* A NULL input is only legal together with ilen == 0 (documented); with
+     * ilen > 0 the update core would dereference it instead of failing. */
+    if (input == NULL && ilen > 0) {
+        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
+    }
+
     return ls_sha_hw_update(ctx, input, ilen);
 }
 
@@ -728,6 +740,12 @@ int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)
     }
 #endif
 
+    /* NULL context is not a legal input (documented: ctx must be initialized);
+     * reject it instead of faulting on the dereference below. */
+    if (ctx == NULL) {
+        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
+    }
+
     if (is224) {
         ctx->is224 = true;
         return otbn_err_to_mbedtls(otbn_hash_init(&ctx->otbn, OTBN_HASH_ALGO_SHA224));
@@ -741,6 +759,12 @@ int mbedtls_sha256_update(mbedtls_sha256_context *ctx,
                           const unsigned char *input,
                           size_t ilen)
 {
+    /* A NULL input is only legal together with ilen == 0 (documented); with
+     * ilen > 0 the OTBN hash engine would be handed a NULL buffer. */
+    if (input == NULL && ilen > 0) {
+        return MBEDTLS_ERR_SHA256_BAD_INPUT_DATA;
+    }
+
     return otbn_err_to_mbedtls(otbn_hash_update(&ctx->otbn, input, (uint32_t)ilen));
 }
 
