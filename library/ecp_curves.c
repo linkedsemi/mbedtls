@@ -54,7 +54,12 @@ static const mbedtls_mpi_uint mpi_one[] = { 1 };
  * to be directly usable in MPIs
  */
 
-#if defined(CONFIG_MBEDTLS_ECDSA_SECP256R1_SECP384R1_SM2_LINKEDSEMI_OTBN_ALT)
+/* SM2 group parameters are needed by mbedtls_ecp_group_load() whenever the SM2
+ * case below is compiled, i.e. for OTBN ECDSA ALT or for OTBN delegation
+ * (client/server, both of which build the SM2 case). Guard must match line 4841.
+ */
+#if defined(CONFIG_MBEDTLS_ECDSA_SECP256R1_SECP384R1_SM2_LINKEDSEMI_OTBN_ALT) || \
+    defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION)
 
 static const mbedtls_mpi_uint sm2_p[] = {
     MBEDTLS_BYTES_TO_T_UINT_8( 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF ),

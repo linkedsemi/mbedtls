@@ -124,6 +124,16 @@ int mbedtls_ecdsa_sign(mbedtls_ecp_group *grp, mbedtls_mpi *r, mbedtls_mpi *s,
         LOG_DBG(" the curve is not supported, curve id: %d",grp->id);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
     }
+
+    /* Validate the private key like the software path does. Without this the
+     * OTBN is fed d == 0 or d >= n and returns success with meaningless r/s
+     * (the caller cannot tell a real signature from garbage). */
+    err = mbedtls_ecp_check_privkey(grp, d);
+    if(err)
+    {
+        LOG_DBG(" invalid private key, err: %d", err);
+        return err;
+    }
     err = mbedtls_ls_otbn_operation_init(mbedtls_get_otbn_curve_id(grp->id));
     if(err)
     {
@@ -432,6 +442,12 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
     }
     err = mbedtls_mpi_read_binary_le(&ctx->Q.Y,cc_buf,otbn_curve_info.curve_size);
     ASSERT_MBEDTLS(err);
+    /* qx/qy above are affine coordinates; set Z=1 so Q is a real affine point.
+     * Z==0 is mbedtls' "point at infinity" (see mbedtls_ecp_is_zero) and is
+     * rejected by mbedtls_ecp_check_pubkey()/mbedtls_ecp_point_write_binary().
+     * Mirrors mbedtls_ecp_point_read_binary().
+     */
+    mbedtls_mpi_lset(&ctx->Q.Z, 1);
 
 exit:
     (void)mbedtls_ls_OTBN_FIRMWARE_ECDSA_deinit();
