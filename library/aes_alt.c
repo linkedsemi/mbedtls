@@ -39,6 +39,20 @@ void mbedtls_aes_free(mbedtls_aes_context *ctx)
     }
 
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_aes_context));
+
+    /* Zero the shared hardware KEY registers so key material does not linger
+     * until the next operation overwrites it. Every crypt entry reloads its
+     * own key (aes_hw_setkey) before use, so this does not disturb other live
+     * contexts. */
+    LSCRYPT->KEY0 = 0;
+    LSCRYPT->KEY1 = 0;
+    LSCRYPT->KEY2 = 0;
+    LSCRYPT->KEY3 = 0;
+    LSCRYPT->KEY4 = 0;
+    LSCRYPT->KEY5 = 0;
+    LSCRYPT->KEY6 = 0;
+    LSCRYPT->KEY7 = 0;
+
 #if CONFIG_SOC_LS1010
         HAL_LSCRYPT_DeInit();
 #elif CONFIG_SOC_LSQSH
