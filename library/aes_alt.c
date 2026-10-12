@@ -2,7 +2,6 @@
 #include "mbedtls/platform_util.h"
 #include "mbedtls/aes.h"
 #include <string.h>
-#include <zephyr/sys/__assert.h>
 #include <ls_hal_crypt.h>
 #include "mbedtls/error.h"
 #include "common.h"
@@ -136,7 +135,7 @@ int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    if (input == NULL || output == NULL) {
+    if (ctx == NULL || input == NULL || output == NULL) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
@@ -179,11 +178,18 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    if (input == NULL || output == NULL) {
+    if (ctx == NULL || iv == NULL || input == NULL || output == NULL) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    __ASSERT_NO_MSG(length % 16 == 0);
+    /* Nothing to do if length is zero. */
+    if (length == 0) {
+        return 0;
+    }
+
+    if (length % 16) {
+        return MBEDTLS_ERR_AES_INVALID_INPUT_LENGTH;
+    }
 
     const unsigned char * end_addr = input + length;
     uint32_t *in = (uint32_t *)input;
@@ -376,8 +382,15 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           unsigned char *output)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    size_t offset = *nc_off;
     size_t i = 0;
+    size_t offset;
+
+    if (ctx == NULL || nc_off == NULL || nonce_counter == NULL ||
+        stream_block == NULL || input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    offset = *nc_off;
 
     if (offset > 0x0F) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
