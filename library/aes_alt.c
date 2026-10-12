@@ -7,7 +7,6 @@
 #include "mbedtls/error.h"
 #include "common.h"
 #include "ctr.h"
-#include <zephyr/sys/__assert.h>
 #if CONFIG_SOC_LSQSH
     #include "field_manipulate.h"
     #include "reg_crypt_type.h"
@@ -94,6 +93,7 @@ static int aes_hw_setkey(const unsigned char *key, unsigned int keybits)
             LSCRYPT->KEY0 = __builtin_bswap32(*u32_key++);
             break;
         }
+        return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
     }while(0);
     REG_FIELD_WR(LSCRYPT->CR,CRYPT_AESKS,keysize);
     return 0;
@@ -103,6 +103,10 @@ int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
     int ret;
+
+    if (ctx == NULL || key == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
 
     ret = aes_hw_setkey(key, keybits);
     if (ret != 0) {
@@ -129,6 +133,10 @@ int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
                           unsigned char output[16])
 {
     if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    if (input == NULL || output == NULL) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
@@ -168,6 +176,10 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
                           unsigned char *output)
 {
     if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    if (input == NULL || output == NULL) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
@@ -363,41 +375,92 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           const unsigned char *input,
                           unsigned char *output)
 {
-    const unsigned char * end_addr = input + length;
-    uint32_t *in = (uint32_t *)input;
-    uint32_t *out = (uint32_t *)output;
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    size_t offset = *nc_off;
+    size_t i = 0;
 
-    uint32_t *u32_counter = (uint32_t *)nonce_counter;
-
-    aes_hw_setkey(ctx->key, ctx->keybits);
-
-    aes_config(false, true, false, false, false, 0x0, 0x2);
-
-    LSCRYPT->IVR3 = __builtin_bswap32(*u32_counter++);
-    LSCRYPT->IVR2 = __builtin_bswap32(*u32_counter++);
-    LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
-    LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
-
-    while (in < (uint32_t*)end_addr)
-    {
-        LSCRYPT->DATA3 = __builtin_bswap32(*in++);
-        LSCRYPT->DATA2 = __builtin_bswap32(*in++);
-        LSCRYPT->DATA1 = __builtin_bswap32(*in++);
-        LSCRYPT->DATA0 = __builtin_bswap32(*in++);
-        REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
-        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
-        LSCRYPT->ICFR = CRYPT_AESIF_MASK;
-        *out++ = __builtin_bswap32(LSCRYPT->RES3);
-        *out++ = __builtin_bswap32(LSCRYPT->RES2);
-        *out++ = __builtin_bswap32(LSCRYPT->RES1);
-        *out++ = __builtin_bswap32(LSCRYPT->RES0);
+    if (offset > 0x0F) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
-    return 0;
+
+    /* 1. Resume from a partially-consumed keystream block left by a previous
+     * call. nonce_counter already points past this block, so no new keystream
+     * is generated here. */
+    if (offset != 0) {
+        size_t n = 16 - offset;
+        if (n > length) {
+            n = length;
+        }
+        mbedtls_xor(&output[i], &input[i], &stream_block[offset], n);
+        i += n;
+        offset = (offset + n) % 16;
+    }
+
+    /* 2. Whole 16-byte blocks via the hardware CTR engine. */
+    size_t full_blocks = (length - i) / 16;
+    if (full_blocks > 0) {
+        uint32_t *in = (uint32_t *)(input + i);
+        uint32_t *out = (uint32_t *)(output + i);
+        uint32_t *u32_counter = (uint32_t *)nonce_counter;
+
+        aes_hw_setkey(ctx->key, ctx->keybits);
+
+        aes_config(false, true, false, false, false, 0x0, 0x2);
+
+        LSCRYPT->IVR3 = __builtin_bswap32(*u32_counter++);
+        LSCRYPT->IVR2 = __builtin_bswap32(*u32_counter++);
+        LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
+        LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
+
+        for (size_t b = 0; b < full_blocks; b++) {
+            LSCRYPT->DATA3 = __builtin_bswap32(*in++);
+            LSCRYPT->DATA2 = __builtin_bswap32(*in++);
+            LSCRYPT->DATA1 = __builtin_bswap32(*in++);
+            LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+            REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
+            while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+            LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+            *out++ = __builtin_bswap32(LSCRYPT->RES3);
+            *out++ = __builtin_bswap32(LSCRYPT->RES2);
+            *out++ = __builtin_bswap32(LSCRYPT->RES1);
+            *out++ = __builtin_bswap32(LSCRYPT->RES0);
+        }
+
+        i += full_blocks * 16;
+
+        /* The hardware auto-incremented its internal counter; mirror that in
+         * the caller's nonce_counter so the next call resumes correctly. */
+        for (size_t b = 0; b < full_blocks; b++) {
+            mbedtls_ctr_increment_counter(nonce_counter);
+        }
+    }
+
+    /* 3. Tail bytes that don't fill a whole block: generate one keystream
+     * block and keep the unused part in stream_block for the next call. */
+    if (i < length) {
+        ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT,
+                                    nonce_counter, stream_block);
+        if (ret != 0) {
+            goto exit;
+        }
+        mbedtls_ctr_increment_counter(nonce_counter);
+
+        size_t n = length - i;
+        mbedtls_xor(&output[i], &input[i], stream_block, n);
+        i += n;
+        offset = n;
+    }
+
+    /* Capture offset for future resumption. */
+    *nc_off = offset;
+
+    ret = 0;
+
+exit:
+    return ret;
 }
 
 #if defined(MBEDTLS_CIPHER_MODE_XTS)
-const unsigned char *aes_xts_key1;
-unsigned int aes_xts_key1bits;
 static inline void mbedtls_gf128mul_x_ble(unsigned char r[16],
                                           const unsigned char x[16])
 {
@@ -457,8 +520,10 @@ int mbedtls_aes_xts_setkey_enc(mbedtls_aes_xts_context *ctx,
         return ret;
     }
 
-    aes_xts_key1 = key1;
-    aes_xts_key1bits = key1bits;
+    ret = mbedtls_aes_setkey_enc(&ctx->crypt, key1, key1bits);
+    if (ret != 0) {
+        return ret;
+    }
 
     /* Set the tweak key. Always set tweak key for the encryption mode. */
     return mbedtls_aes_setkey_enc(&ctx->tweak, key2, key2bits);
@@ -518,12 +583,6 @@ int mbedtls_aes_crypt_xts(mbedtls_aes_xts_context *ctx,
         }
 
         mbedtls_xor(tmp, input, tweak, 16);
-
-        /* This is different from the software configuration of mbedtls */
-        ret = mbedtls_aes_setkey_enc(&ctx->crypt, aes_xts_key1, aes_xts_key1bits);
-        if (ret != 0) {
-            return ret;
-        }
 
         ret = mbedtls_aes_crypt_ecb(&ctx->crypt, mode, tmp, tmp);
         if (ret != 0) {
