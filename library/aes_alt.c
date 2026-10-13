@@ -504,12 +504,26 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
         offset = (offset + n) % 16;
     }
 
-    /* 2. Whole 16-byte blocks via the hardware CTR engine. */
+    /* 2. Whole 16-byte blocks via the hardware CTR engine (fast path). Its
+     * counter auto-increment does not carry across the 32-bit word boundary
+     * (IVR0 -> IVR1), so a run must not pass a low-word wrap: stop before it
+     * and reload IVR from the software-incremented nonce_counter. */
     size_t full_blocks = (length - i) / 16;
-    if (full_blocks > 0) {
+    size_t done = 0;
+    while (done < full_blocks) {
+        uint32_t *u32_counter = (uint32_t *)nonce_counter;
+        uint32_t low = __builtin_bswap32(u32_counter[3]);
+
+        size_t batch = full_blocks - done;
+        if (low != 0u) {
+            size_t until_wrap = (size_t)(0x100000000ULL - (uint64_t)low);
+            if (until_wrap < batch) {
+                batch = until_wrap;
+            }
+        }
+
         uint32_t *in = (uint32_t *)(input + i);
         uint32_t *out = (uint32_t *)(output + i);
-        uint32_t *u32_counter = (uint32_t *)nonce_counter;
 
         ret = aes_hw_setkey(ctx->key, ctx->keybits);
         if (ret != 0) {
@@ -523,12 +537,12 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
         LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
         LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
 
-        for (size_t b = 0; b < full_blocks; b++) {
+        for (size_t b = 0; b < batch; b++) {
             LSCRYPT->DATA3 = __builtin_bswap32(*in++);
             LSCRYPT->DATA2 = __builtin_bswap32(*in++);
             LSCRYPT->DATA1 = __builtin_bswap32(*in++);
             LSCRYPT->DATA0 = __builtin_bswap32(*in++);
-            REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
+            REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
             ret = aes_hw_wait_done();
             if (ret != 0) {
                 goto exit;
@@ -540,13 +554,12 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
             *out++ = __builtin_bswap32(LSCRYPT->RES0);
         }
 
-        i += full_blocks * 16;
-
-        /* The hardware auto-incremented its internal counter; mirror that in
-         * the caller's nonce_counter so the next call resumes correctly. */
-        for (size_t b = 0; b < full_blocks; b++) {
+        for (size_t b = 0; b < batch; b++) {
             mbedtls_ctr_increment_counter(nonce_counter);
         }
+
+        i += batch * 16;
+        done += batch;
     }
 
     /* 3. Tail bytes that don't fill a whole block: generate one keystream
