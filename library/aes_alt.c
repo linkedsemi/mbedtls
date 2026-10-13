@@ -173,8 +173,11 @@ static int aes_crypt_ecb_raw(mbedtls_aes_context *ctx,
     uint32_t *out = (uint32_t *)output;
 
     /* Restore this context's key — a different context may have overwritten
-     * the shared hardware KEY registers since the last setkey call. */
-    aes_hw_setkey(ctx->key, ctx->keybits);
+     * the shared hardware KEY registers since the last setkey call. Failing
+     * here means the context was never keyed; do not run with a stale key. */
+    if (aes_hw_setkey(ctx->key, ctx->keybits) != 0) {
+        return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
+    }
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
@@ -254,7 +257,10 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
 
     k_mutex_lock(&aes_hw_mutex, K_FOREVER);
 
-    aes_hw_setkey(ctx->key, ctx->keybits);
+    ret = aes_hw_setkey(ctx->key, ctx->keybits);
+    if (ret != 0) {
+        goto exit;
+    }
 
     LSCRYPT->IVR3 = __builtin_bswap32(*u32_iv++);
     LSCRYPT->IVR2 = __builtin_bswap32(*u32_iv++);
@@ -505,7 +511,10 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
         uint32_t *out = (uint32_t *)(output + i);
         uint32_t *u32_counter = (uint32_t *)nonce_counter;
 
-        aes_hw_setkey(ctx->key, ctx->keybits);
+        ret = aes_hw_setkey(ctx->key, ctx->keybits);
+        if (ret != 0) {
+            goto exit;
+        }
 
         aes_config(false, true, false, false, false, 0x0, 0x2);
 
