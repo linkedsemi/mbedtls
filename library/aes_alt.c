@@ -2,12 +2,11 @@
 #include "mbedtls/platform_util.h"
 #include "mbedtls/aes.h"
 #include <string.h>
-#include <zephyr/sys/__assert.h>
 #include <ls_hal_crypt.h>
 #include "mbedtls/error.h"
 #include "common.h"
 #include "ctr.h"
-#include <zephyr/sys/__assert.h>
+#include <zephyr/kernel.h>
 #if CONFIG_SOC_LSQSH
     #include "field_manipulate.h"
     #include "reg_crypt_type.h"
@@ -16,6 +15,11 @@
 
 #if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
 #define AES_BLOCK_SIZE 16
+#define AES_HW_WAIT_TIMEOUT_MS 100
+
+/* Serialize access to the shared LSCRYPT register bank. CBC/CTR chain blocks
+ * inside the hardware, so the lock must span a whole buffer, not one block. */
+static K_MUTEX_DEFINE(aes_hw_mutex);
 
 void mbedtls_aes_init(mbedtls_aes_context *ctx)
 {
@@ -39,12 +43,27 @@ void mbedtls_aes_free(mbedtls_aes_context *ctx)
     }
 
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_aes_context));
+
+    /* Zero the shared hardware KEY registers so key material does not linger
+     * until the next operation overwrites it. Every crypt entry reloads its
+     * own key (aes_hw_setkey) before use, so this does not disturb other live
+     * contexts. */
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+    LSCRYPT->KEY0 = 0;
+    LSCRYPT->KEY1 = 0;
+    LSCRYPT->KEY2 = 0;
+    LSCRYPT->KEY3 = 0;
+    LSCRYPT->KEY4 = 0;
+    LSCRYPT->KEY5 = 0;
+    LSCRYPT->KEY6 = 0;
+    LSCRYPT->KEY7 = 0;
 #if CONFIG_SOC_LS1010
         HAL_LSCRYPT_DeInit();
 #elif CONFIG_SOC_LSQSH
     /* 不能关时钟：所有 AES context 共享同一套硬件 KEY 寄存器，
      * 关掉会导致其他 context 无法访问硬件。 */
 #endif
+    k_mutex_unlock(&aes_hw_mutex);
 }
 
 static void aes_config(bool iv_en, bool enc, bool ie, bool dmaen, bool fifoen, uint8_t type, uint8_t mode)
@@ -94,8 +113,23 @@ static int aes_hw_setkey(const unsigned char *key, unsigned int keybits)
             LSCRYPT->KEY0 = __builtin_bswap32(*u32_key++);
             break;
         }
+        return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
     }while(0);
     REG_FIELD_WR(LSCRYPT->CR,CRYPT_AESKS,keysize);
+    return 0;
+}
+
+/* Poll the engine with a deadline: if AESRIF is never set (clock gated, reset
+ * not released, or hardware fault) the caller must not spin forever. */
+static int aes_hw_wait_done(void)
+{
+    int64_t start = k_uptime_get();
+
+    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0) {
+        if ((k_uptime_get() - start) > AES_HW_WAIT_TIMEOUT_MS) {
+            return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+        }
+    }
     return 0;
 }
 
@@ -104,7 +138,13 @@ int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
 {
     int ret;
 
+    if (ctx == NULL || key == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
     ret = aes_hw_setkey(key, keybits);
+    k_mutex_unlock(&aes_hw_mutex);
     if (ret != 0) {
         return ret;
     }
@@ -123,21 +163,21 @@ int mbedtls_aes_setkey_dec(mbedtls_aes_context *ctx, const unsigned char *key,
     return mbedtls_aes_setkey_enc(ctx, key, keybits);
 }
 
-int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
-                          int mode,
-                          const unsigned char input[16],
-                          unsigned char output[16])
+/* Hardware ECB on a single block. The caller must hold aes_hw_mutex. */
+static int aes_crypt_ecb_raw(mbedtls_aes_context *ctx,
+                             int mode,
+                             const unsigned char input[16],
+                             unsigned char output[16])
 {
-    if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
-        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
-    }
-
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
 
     /* Restore this context's key — a different context may have overwritten
-     * the shared hardware KEY registers since the last setkey call. */
-    aes_hw_setkey(ctx->key, ctx->keybits);
+     * the shared hardware KEY registers since the last setkey call. Failing
+     * here means the context was never keyed; do not run with a stale key. */
+    if (aes_hw_setkey(ctx->key, ctx->keybits) != 0) {
+        return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
+    }
 
     if(mode == MBEDTLS_AES_ENCRYPT)
     {
@@ -151,13 +191,37 @@ int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
     LSCRYPT->DATA1 = *in++;
     LSCRYPT->DATA0 = *in++;
     REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
-    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+    if (aes_hw_wait_done() != 0) {
+        return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+    }
     LSCRYPT->ICFR = CRYPT_AESIF_MASK;
     *out++ = LSCRYPT->RES3;
     *out++ = LSCRYPT->RES2;
     *out++ = LSCRYPT->RES1;
     *out++ = LSCRYPT->RES0;
     return 0;
+}
+
+int mbedtls_aes_crypt_ecb(mbedtls_aes_context *ctx,
+                          int mode,
+                          const unsigned char input[16],
+                          unsigned char output[16])
+{
+    int ret;
+
+    if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    if (ctx == NULL || input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+    ret = aes_crypt_ecb_raw(ctx, mode, input, output);
+    k_mutex_unlock(&aes_hw_mutex);
+
+    return ret;
 }
 
 int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
@@ -167,18 +231,36 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
                           const unsigned char *input,
                           unsigned char *output)
 {
+    int ret = 0;
+
     if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    __ASSERT_NO_MSG(length % 16 == 0);
+    if (ctx == NULL || iv == NULL || input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    /* Nothing to do if length is zero. */
+    if (length == 0) {
+        return 0;
+    }
+
+    if (length % 16) {
+        return MBEDTLS_ERR_AES_INVALID_INPUT_LENGTH;
+    }
 
     const unsigned char * end_addr = input + length;
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
     uint32_t *u32_iv = (uint32_t *)iv;
 
-    aes_hw_setkey(ctx->key, ctx->keybits);
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+
+    ret = aes_hw_setkey(ctx->key, ctx->keybits);
+    if (ret != 0) {
+        goto exit;
+    }
 
     LSCRYPT->IVR3 = __builtin_bswap32(*u32_iv++);
     LSCRYPT->IVR2 = __builtin_bswap32(*u32_iv++);
@@ -202,7 +284,10 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         LSCRYPT->DATA1 = __builtin_bswap32(*in++);
         LSCRYPT->DATA0 = __builtin_bswap32(*in++);
         REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
-        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+        if (aes_hw_wait_done() != 0) {
+            ret = MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
+            goto exit;
+        }
         LSCRYPT->CR &= ~CRYPT_IVREN_MASK;
         LSCRYPT->ICFR = CRYPT_AESIF_MASK;
         *out++ = __builtin_bswap32(LSCRYPT->RES3);
@@ -220,7 +305,9 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         memcpy(iv, (unsigned char *)(out - 4), 16);
     }
 
-    return 0;
+exit:
+    k_mutex_unlock(&aes_hw_mutex);
+    return ret;
 }
 
 int mbedtls_aes_crypt_cfb128(mbedtls_aes_context *ctx,
@@ -239,16 +326,23 @@ int mbedtls_aes_crypt_cfb128(mbedtls_aes_context *ctx,
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
+    if (ctx == NULL || iv_off == NULL || iv == NULL ||
+        input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
     n = *iv_off;
 
     if (n > 15) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+
     if (mode == MBEDTLS_AES_DECRYPT) {
         while (length--) {
             if (n == 0) {
-                ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+                ret = aes_crypt_ecb_raw(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
                 if (ret != 0) {
                     goto exit;
                 }
@@ -263,7 +357,7 @@ int mbedtls_aes_crypt_cfb128(mbedtls_aes_context *ctx,
     } else {
         while (length--) {
             if (n == 0) {
-                ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+                ret = aes_crypt_ecb_raw(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
                 if (ret != 0) {
                     goto exit;
                 }
@@ -279,6 +373,7 @@ int mbedtls_aes_crypt_cfb128(mbedtls_aes_context *ctx,
     ret = 0;
 
 exit:
+    k_mutex_unlock(&aes_hw_mutex);
     return ret;
 }
 
@@ -296,9 +391,16 @@ int mbedtls_aes_crypt_cfb8(mbedtls_aes_context *ctx,
     if (mode != MBEDTLS_AES_ENCRYPT && mode != MBEDTLS_AES_DECRYPT) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
+
+    if (ctx == NULL || iv == NULL || input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+
     while (length--) {
         memcpy(ov, iv, 16);
-        ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+        ret = aes_crypt_ecb_raw(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
         if (ret != 0) {
             goto exit;
         }
@@ -318,6 +420,7 @@ int mbedtls_aes_crypt_cfb8(mbedtls_aes_context *ctx,
     ret = 0;
 
 exit:
+    k_mutex_unlock(&aes_hw_mutex);
     return ret;
 }
 
@@ -331,15 +434,22 @@ int mbedtls_aes_crypt_ofb(mbedtls_aes_context *ctx,
     int ret = 0;
     size_t n;
 
+    if (ctx == NULL || iv_off == NULL || iv == NULL ||
+        input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
     n = *iv_off;
 
     if (n > 15) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+
     while (length--) {
         if (n == 0) {
-            ret = mbedtls_aes_crypt_ecb(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
+            ret = aes_crypt_ecb_raw(ctx, MBEDTLS_AES_ENCRYPT, iv, iv);
             if (ret != 0) {
                 goto exit;
             }
@@ -352,6 +462,7 @@ int mbedtls_aes_crypt_ofb(mbedtls_aes_context *ctx,
     *iv_off = n;
 
 exit:
+    k_mutex_unlock(&aes_hw_mutex);
     return ret;
 }
 
@@ -363,41 +474,121 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           const unsigned char *input,
                           unsigned char *output)
 {
-    const unsigned char * end_addr = input + length;
-    uint32_t *in = (uint32_t *)input;
-    uint32_t *out = (uint32_t *)output;
+    int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
+    size_t i = 0;
+    size_t offset;
 
-    uint32_t *u32_counter = (uint32_t *)nonce_counter;
-
-    aes_hw_setkey(ctx->key, ctx->keybits);
-
-    aes_config(false, true, false, false, false, 0x0, 0x2);
-
-    LSCRYPT->IVR3 = __builtin_bswap32(*u32_counter++);
-    LSCRYPT->IVR2 = __builtin_bswap32(*u32_counter++);
-    LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
-    LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
-
-    while (in < (uint32_t*)end_addr)
-    {
-        LSCRYPT->DATA3 = __builtin_bswap32(*in++);
-        LSCRYPT->DATA2 = __builtin_bswap32(*in++);
-        LSCRYPT->DATA1 = __builtin_bswap32(*in++);
-        LSCRYPT->DATA0 = __builtin_bswap32(*in++);
-        REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
-        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
-        LSCRYPT->ICFR = CRYPT_AESIF_MASK;
-        *out++ = __builtin_bswap32(LSCRYPT->RES3);
-        *out++ = __builtin_bswap32(LSCRYPT->RES2);
-        *out++ = __builtin_bswap32(LSCRYPT->RES1);
-        *out++ = __builtin_bswap32(LSCRYPT->RES0);
+    if (ctx == NULL || nc_off == NULL || nonce_counter == NULL ||
+        stream_block == NULL || input == NULL || output == NULL) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
-    return 0;
+
+    offset = *nc_off;
+
+    if (offset > 0x0F) {
+        return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
+    }
+
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+
+    /* 1. Resume from a partially-consumed keystream block left by a previous
+     * call. nonce_counter already points past this block, so no new keystream
+     * is generated here. */
+    if (offset != 0) {
+        size_t n = 16 - offset;
+        if (n > length) {
+            n = length;
+        }
+        mbedtls_xor(&output[i], &input[i], &stream_block[offset], n);
+        i += n;
+        offset = (offset + n) % 16;
+    }
+
+    /* 2. Whole 16-byte blocks via the hardware CTR engine (fast path). Its
+     * counter auto-increment does not carry across the 32-bit word boundary
+     * (IVR0 -> IVR1), so a run must not pass a low-word wrap: stop before it
+     * and reload IVR from the software-incremented nonce_counter. */
+    size_t full_blocks = (length - i) / 16;
+    size_t done = 0;
+    while (done < full_blocks) {
+        uint32_t *u32_counter = (uint32_t *)nonce_counter;
+        uint32_t low = __builtin_bswap32(u32_counter[3]);
+
+        size_t batch = full_blocks - done;
+        if (low != 0u) {
+            size_t until_wrap = (size_t)(0x100000000ULL - (uint64_t)low);
+            if (until_wrap < batch) {
+                batch = until_wrap;
+            }
+        }
+
+        uint32_t *in = (uint32_t *)(input + i);
+        uint32_t *out = (uint32_t *)(output + i);
+
+        ret = aes_hw_setkey(ctx->key, ctx->keybits);
+        if (ret != 0) {
+            goto exit;
+        }
+
+        aes_config(false, true, false, false, false, 0x0, 0x2);
+
+        LSCRYPT->IVR3 = __builtin_bswap32(*u32_counter++);
+        LSCRYPT->IVR2 = __builtin_bswap32(*u32_counter++);
+        LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
+        LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
+
+        for (size_t b = 0; b < batch; b++) {
+            LSCRYPT->DATA3 = __builtin_bswap32(*in++);
+            LSCRYPT->DATA2 = __builtin_bswap32(*in++);
+            LSCRYPT->DATA1 = __builtin_bswap32(*in++);
+            LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+            REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
+            ret = aes_hw_wait_done();
+            if (ret != 0) {
+                goto exit;
+            }
+            LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+            *out++ = __builtin_bswap32(LSCRYPT->RES3);
+            *out++ = __builtin_bswap32(LSCRYPT->RES2);
+            *out++ = __builtin_bswap32(LSCRYPT->RES1);
+            *out++ = __builtin_bswap32(LSCRYPT->RES0);
+        }
+
+        for (size_t b = 0; b < batch; b++) {
+            mbedtls_ctr_increment_counter(nonce_counter);
+        }
+
+        i += batch * 16;
+        done += batch;
+    }
+
+    /* 3. Tail bytes that don't fill a whole block: generate one keystream
+     * block and keep the unused part in stream_block for the next call. */
+    if (i < length) {
+        ret = aes_crypt_ecb_raw(ctx, MBEDTLS_AES_ENCRYPT,
+                                nonce_counter, stream_block);
+        if (ret != 0) {
+            goto exit;
+        }
+        mbedtls_ctr_increment_counter(nonce_counter);
+
+        size_t n = length - i;
+        mbedtls_xor(&output[i], &input[i], stream_block, n);
+        i += n;
+        offset = n;
+    }
+
+    /* Capture offset for future resumption. */
+    *nc_off = offset;
+
+    ret = 0;
+
+exit:
+    k_mutex_unlock(&aes_hw_mutex);
+    return ret;
 }
 
 #if defined(MBEDTLS_CIPHER_MODE_XTS)
-const unsigned char *aes_xts_key1;
-unsigned int aes_xts_key1bits;
 static inline void mbedtls_gf128mul_x_ble(unsigned char r[16],
                                           const unsigned char x[16])
 {
@@ -457,8 +648,10 @@ int mbedtls_aes_xts_setkey_enc(mbedtls_aes_xts_context *ctx,
         return ret;
     }
 
-    aes_xts_key1 = key1;
-    aes_xts_key1bits = key1bits;
+    ret = mbedtls_aes_setkey_enc(&ctx->crypt, key1, key1bits);
+    if (ret != 0) {
+        return ret;
+    }
 
     /* Set the tweak key. Always set tweak key for the encryption mode. */
     return mbedtls_aes_setkey_enc(&ctx->tweak, key2, key2bits);
@@ -499,11 +692,13 @@ int mbedtls_aes_crypt_xts(mbedtls_aes_xts_context *ctx,
         return MBEDTLS_ERR_AES_INVALID_INPUT_LENGTH;
     }
 
+    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
+
     /* Compute the tweak. */
-    ret = mbedtls_aes_crypt_ecb(&ctx->tweak, MBEDTLS_AES_ENCRYPT,
-                                data_unit, tweak);
+    ret = aes_crypt_ecb_raw(&ctx->tweak, MBEDTLS_AES_ENCRYPT,
+                            data_unit, tweak);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     while (blocks--) {
@@ -519,15 +714,9 @@ int mbedtls_aes_crypt_xts(mbedtls_aes_xts_context *ctx,
 
         mbedtls_xor(tmp, input, tweak, 16);
 
-        /* This is different from the software configuration of mbedtls */
-        ret = mbedtls_aes_setkey_enc(&ctx->crypt, aes_xts_key1, aes_xts_key1bits);
+        ret = aes_crypt_ecb_raw(&ctx->crypt, mode, tmp, tmp);
         if (ret != 0) {
-            return ret;
-        }
-
-        ret = mbedtls_aes_crypt_ecb(&ctx->crypt, mode, tmp, tmp);
-        if (ret != 0) {
-            return ret;
+            goto exit;
         }
 
         mbedtls_xor(output, tmp, tweak, 16);
@@ -562,9 +751,9 @@ int mbedtls_aes_crypt_xts(mbedtls_aes_xts_context *ctx,
          * round. */
         mbedtls_xor(tmp + i, prev_output + i, t + i, 16 - i);
 
-        ret = mbedtls_aes_crypt_ecb(&ctx->crypt, mode, tmp, tmp);
+        ret = aes_crypt_ecb_raw(&ctx->crypt, mode, tmp, tmp);
         if (ret != 0) {
-            return ret;
+            goto exit;
         }
 
         /* Write the result back to the previous block, overriding the previous
@@ -572,7 +761,11 @@ int mbedtls_aes_crypt_xts(mbedtls_aes_xts_context *ctx,
         mbedtls_xor(prev_output, tmp, t, 16);
     }
 
-    return 0;
+    ret = 0;
+
+exit:
+    k_mutex_unlock(&aes_hw_mutex);
+    return ret;
 }
 
 void mbedtls_aes_xts_free(mbedtls_aes_xts_context *ctx)
