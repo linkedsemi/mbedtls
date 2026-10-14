@@ -428,4 +428,62 @@ exit:
     return ret;
 }
 
+/*
+ * Byte-level entry point for the OTBN delegation server.
+ *
+ * A delegated request arrives as raw buffers: there is no mbedtls_rsa_context
+ * to call with, and importing one would cost a full MPI round trip on the peer
+ * for no gain. The semantics are those of mbedtls_rsa_public_otbn() /
+ * mbedtls_rsa_private_otbn() with exp = e or d -- big-endian buffers,
+ * num_bytes = modulus length (256/384/512), and the same F4 shortcut for a
+ * 65537 public exponent, so the delegated result matches the local one.
+ */
+int mbedtls_ls_otbn_rsa_modexp(const uint8_t *input, uint8_t *output,
+                               const uint8_t *exp, const uint8_t *n,
+                               size_t num_bytes, bool is_public)
+{
+    uint8_t n_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t exp_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t in_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t out_le[MBEDTLS_MPI_MAX_SIZE];
+    uint32_t e_val = 0;
+    bool is_f4 = false;
+    uint32_t mode;
+    int ret;
+
+    if (num_bytes != 256 && num_bytes != 384 && num_bytes != 512) {
+        return -ENOTSUP;
+    }
+
+    reverse_buf(input, in_le, num_bytes);
+    reverse_buf(n, n_le, num_bytes);
+    reverse_buf(exp, exp_le, num_bytes);
+    if (is_public) {
+        e_val = exp_le[0] | (exp_le[1] << 8) | (exp_le[2] << 16) | (exp_le[3] << 24);
+        if (e_val == 65537) {
+            is_f4 = true;
+        }
+    }
+
+    mode = rsa_otbn_select_mode(num_bytes * 8, is_public, is_f4);
+    if (mode == 0) {
+        ret = -EINVAL;
+        goto exit;
+    }
+
+    ret = rsa_otbn_modexp(in_le, out_le, mode, is_f4 ? NULL : exp_le, n_le, num_bytes);
+    if (ret != 0) {
+        goto exit;
+    }
+    reverse_buf(out_le, output, num_bytes);
+
+exit:
+    mbedtls_platform_zeroize(n_le, sizeof(n_le));
+    mbedtls_platform_zeroize(exp_le, sizeof(exp_le));
+    mbedtls_platform_zeroize(in_le, sizeof(in_le));
+    mbedtls_platform_zeroize(out_le, sizeof(out_le));
+
+    return ret;
+}
+
 #endif /* MBEDTLS_RSA_C && MBEDTLS_RSA_OTBN_HOOK && !delegation client */

@@ -11,7 +11,14 @@
  *
  * SEC1 https://www.secg.org/sec1-v2.pdf
  */
-#if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
+/* This file provides the mbedtls_ecdsa_* implementation on top of the local
+ * OTBN. It is compiled only when the local entry of
+ * MBEDTLS_ECDSA_LINKEDSEMI_OTBN_ALT_MODE is selected -- the CMakeLists gates it
+ * on that symbol. This guard is the second half of the same rule: when the
+ * delegation entry is selected instead, mbedtls_otbn_crypto_mbox.c supplies
+ * mbedtls_ecdsa_* and defining them here as well would collide.
+ */
+#if !defined(CONFIG_MBEDTLS_ECDSA_LINKEDSEMI_OTBN_ALT_VIA_DELEGATION)
 #include "common.h"
 
 #if defined(MBEDTLS_ECDSA_C)
@@ -354,6 +361,20 @@ int mbedtls_ecdsa_genkey(mbedtls_ecdsa_context *ctx, mbedtls_ecp_group_id gid,
         LOG_DBG(" the curve is not supported, curve id: %d\n",gid);
         return MBEDTLS_ERR_ECP_IN_PROGRESS;
     }
+    /* mbedtls_ecdsa_genkey() is documented to take only an initialized context
+     * and to load the curve itself (see the software implementation in ecdsa.c),
+     * and callers rely on ctx->grp being usable afterwards --
+     * mbedtls_ecp_check_pubkey() and point export need it. Skipping this made
+     * the same call work on the software and delegation entries but fail here on
+     * an empty group. Reported as a contract mismatch; see
+     * 810_driver_test/KNOWN_ISSUES.md #121 and the OTBN usage doc.
+     * No session is held yet, so a failure returns directly.
+     */
+    err = mbedtls_ecp_group_load(&ctx->grp, gid);
+    if(err)
+    {
+        return err;
+    }
     err = mbedtls_ls_otbn_operation_init(mbedtls_get_otbn_curve_id(gid));
     if(err)
     {
@@ -479,4 +500,4 @@ otbn_firmware_t mbedtls_get_otbn_curve_id(mbedtls_ecp_group_id mbedtls_curve)
 
 
 #endif /* MBEDTLS_ECDSA_C */
-#endif /* !CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT */
+#endif /* !CONFIG_MBEDTLS_ECDSA_LINKEDSEMI_OTBN_ALT_VIA_DELEGATION */
