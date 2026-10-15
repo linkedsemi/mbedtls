@@ -15,7 +15,6 @@
 
 #if defined(CONFIG_MBEDTLS_CIPHER_AES_LINKEDSEMI)
 #define AES_BLOCK_SIZE 16
-#define AES_HW_WAIT_TIMEOUT_MS 100
 
 /* Serialize access to the shared LSCRYPT register bank. CBC/CTR chain blocks
  * inside the hardware, so the lock must span a whole buffer, not one block. */
@@ -119,20 +118,6 @@ static int aes_hw_setkey(const unsigned char *key, unsigned int keybits)
     return 0;
 }
 
-/* Poll the engine with a deadline: if AESRIF is never set (clock gated, reset
- * not released, or hardware fault) the caller must not spin forever. */
-static int aes_hw_wait_done(void)
-{
-    int64_t start = k_uptime_get();
-
-    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0) {
-        if ((k_uptime_get() - start) > AES_HW_WAIT_TIMEOUT_MS) {
-            return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
-        }
-    }
-    return 0;
-}
-
 int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
@@ -191,9 +176,7 @@ static int aes_crypt_ecb_raw(mbedtls_aes_context *ctx,
     LSCRYPT->DATA1 = *in++;
     LSCRYPT->DATA0 = *in++;
     REG_FIELD_WR(LSCRYPT->CR,CRYPT_GO,1);
-    if (aes_hw_wait_done() != 0) {
-        return MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
-    }
+    while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
     LSCRYPT->ICFR = CRYPT_AESIF_MASK;
     *out++ = LSCRYPT->RES3;
     *out++ = LSCRYPT->RES2;
@@ -284,10 +267,7 @@ int mbedtls_aes_crypt_cbc(mbedtls_aes_context *ctx,
         LSCRYPT->DATA1 = __builtin_bswap32(*in++);
         LSCRYPT->DATA0 = __builtin_bswap32(*in++);
         REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
-        if (aes_hw_wait_done() != 0) {
-            ret = MBEDTLS_ERR_PLATFORM_HW_ACCEL_FAILED;
-            goto exit;
-        }
+        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
         LSCRYPT->CR &= ~CRYPT_IVREN_MASK;
         LSCRYPT->ICFR = CRYPT_AESIF_MASK;
         *out++ = __builtin_bswap32(LSCRYPT->RES3);
@@ -543,10 +523,7 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
             LSCRYPT->DATA1 = __builtin_bswap32(*in++);
             LSCRYPT->DATA0 = __builtin_bswap32(*in++);
             REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
-            ret = aes_hw_wait_done();
-            if (ret != 0) {
-                goto exit;
-            }
+            while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
             LSCRYPT->ICFR = CRYPT_AESIF_MASK;
             *out++ = __builtin_bswap32(LSCRYPT->RES3);
             *out++ = __builtin_bswap32(LSCRYPT->RES2);
