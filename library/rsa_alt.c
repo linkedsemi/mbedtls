@@ -45,6 +45,12 @@ static int rsa_otbn_load_app(void)
 {
     int ret;
 
+    /* IMEM survives session release, so skip the 1.6 KB rewrite when the
+     * modexp image is already resident (Miller-Rabin calls this per round). */
+    if (ls_otbn_imem_firmware_get() == OTBN_FIRMWARE_RSA_MODEXP) {
+        return 0;
+    }
+
     if (!HAL_OTBN_In_Idle_State()) {
         LOG_ERR("OTBN not idle before loading RSA firmware");
         return -EBUSY;
@@ -63,6 +69,11 @@ static uint32_t rsa_otbn_select_mode(size_t n_bits, bool is_public, bool is_f4)
 {
     if (is_public) {
         switch (n_bits) {
+        case 1024:
+            /* Prime-sized modulus: generic exponent only, no F4 variant. */
+            return is_f4 ? 0 : MODE_RSA_1024_MODEXP;
+        case 1536:
+            return is_f4 ? 0 : MODE_RSA_1536_MODEXP;
         case 2048:
             return is_f4 ? MODE_RSA_2048_MODEXP_F4 : MODE_RSA_2048_MODEXP;
         case 3072:
@@ -72,6 +83,10 @@ static uint32_t rsa_otbn_select_mode(size_t n_bits, bool is_public, bool is_f4)
         }
     } else {
         switch (n_bits) {
+        case 1024:
+            return MODE_RSA_1024_MODEXP;
+        case 1536:
+            return MODE_RSA_1536_MODEXP;
         case 2048:
             return MODE_RSA_2048_MODEXP;
         case 3072:
@@ -451,14 +466,15 @@ int mbedtls_ls_otbn_rsa_modexp(const uint8_t *input, uint8_t *output,
     uint32_t mode;
     int ret;
 
-    if (num_bytes != 256 && num_bytes != 384 && num_bytes != 512) {
+    if (num_bytes != 128 && num_bytes != 192 &&
+        num_bytes != 256 && num_bytes != 384 && num_bytes != 512) {
         return -ENOTSUP;
     }
 
     reverse_buf(input, in_le, num_bytes);
     reverse_buf(n, n_le, num_bytes);
     reverse_buf(exp, exp_le, num_bytes);
-    if (is_public) {
+    if (is_public && num_bytes >= 256) {
         e_val = exp_le[0] | (exp_le[1] << 8) | (exp_le[2] << 16) | (exp_le[3] << 24);
         if (e_val == 65537) {
             is_f4 = true;
