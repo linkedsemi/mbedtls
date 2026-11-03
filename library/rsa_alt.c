@@ -41,6 +41,15 @@ static void reverse_buf(const uint8_t *in, uint8_t *out, size_t len)
     }
 }
 
+/*
+ * Largest modulus any path below accepts: 4096 bits. MBEDTLS_MPI_MAX_SIZE
+ * (1 KB) is the library's upper bound for bignum limbs -- which live on the
+ * heap, not on the stack -- and would be twice what these byte scratch
+ * buffers can ever be asked to hold. Sizing them by 1 KB put 4 KB on the
+ * caller's stack per modexp frame, which no 4 KB stack survives.
+ */
+#define RSA_MODEOP_MAX_BYTES 512
+
 static int rsa_otbn_load_app(void)
 {
     int ret;
@@ -162,15 +171,18 @@ int mbedtls_rsa_public_otbn(mbedtls_rsa_context *ctx,
 {
     int ret;
     size_t num_bytes = ctx->len;
-    uint8_t n_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t exp_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t in_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t out_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t n_le[RSA_MODEOP_MAX_BYTES];
+    uint8_t exp_le[RSA_MODEOP_MAX_BYTES];
+    uint8_t in_le[RSA_MODEOP_MAX_BYTES];
+    /* The result reuses the input buffer: rsa_otbn_modexp() has copied all of
+     * in_le into DMEM before it reads the result back into out_le. */
+    uint8_t *out_le = in_le;
     uint32_t e_val;
     bool is_f4 = false;
     uint32_t mode;
 
-    if (num_bytes != 256 && num_bytes != 384 && num_bytes != 512) {
+    if (num_bytes > sizeof(n_le) ||
+        (num_bytes != 256 && num_bytes != 384 && num_bytes != 512)) {
         return -ENOTSUP;
     }
 
@@ -180,12 +192,12 @@ int mbedtls_rsa_public_otbn(mbedtls_rsa_context *ctx,
 
     ret = mbedtls_mpi_write_binary_le(&ctx->N, n_le, num_bytes);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     ret = mbedtls_mpi_write_binary_le(&ctx->E, exp_le, num_bytes);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     e_val = exp_le[0] | (exp_le[1] << 8) |
@@ -198,24 +210,27 @@ int mbedtls_rsa_public_otbn(mbedtls_rsa_context *ctx,
 
     mode = rsa_otbn_select_mode(num_bytes * 8, true, is_f4);
     if (mode == 0) {
-        return -EINVAL;
+        ret = -EINVAL;
+        goto exit;
     }
 
     ret = rsa_otbn_modexp(in_le, out_le, mode,
                           is_f4 ? NULL : exp_le,
                           n_le, num_bytes);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     reverse_buf(out_le, output, num_bytes);
+    ret = 0;
 
+exit:
     mbedtls_platform_zeroize(n_le, sizeof(n_le));
     mbedtls_platform_zeroize(exp_le, sizeof(exp_le));
+    /* in_le is also out_le. */
     mbedtls_platform_zeroize(in_le, sizeof(in_le));
-    mbedtls_platform_zeroize(out_le, sizeof(out_le));
 
-    return 0;
+    return ret;
 }
 
 int mbedtls_rsa_private_otbn(mbedtls_rsa_context *ctx,
@@ -226,16 +241,18 @@ int mbedtls_rsa_private_otbn(mbedtls_rsa_context *ctx,
 {
     int ret;
     size_t num_bytes = ctx->len;
-    uint8_t n_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t d_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t in_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t out_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t n_le[RSA_MODEOP_MAX_BYTES];
+    uint8_t d_le[RSA_MODEOP_MAX_BYTES];
+    uint8_t in_le[RSA_MODEOP_MAX_BYTES];
+    /* in_le is also out_le: see mbedtls_rsa_public_otbn(). */
+    uint8_t *out_le = in_le;
     uint32_t mode;
 
     (void)f_rng;
     (void)p_rng;
 
-    if (num_bytes != 256 && num_bytes != 384 && num_bytes != 512) {
+    if (num_bytes > sizeof(n_le) ||
+        (num_bytes != 256 && num_bytes != 384 && num_bytes != 512)) {
         return -ENOTSUP;
     }
 
@@ -254,35 +271,38 @@ int mbedtls_rsa_private_otbn(mbedtls_rsa_context *ctx,
 
     ret = mbedtls_mpi_write_binary_le(&ctx->N, n_le, num_bytes);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     ret = mbedtls_mpi_write_binary_le(&ctx->D, d_le, num_bytes);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     reverse_buf(input, in_le, num_bytes);
 
     mode = rsa_otbn_select_mode(num_bytes * 8, false, false);
     if (mode == 0) {
-        return -EINVAL;
+        ret = -EINVAL;
+        goto exit;
     }
 
     ret = rsa_otbn_modexp(in_le, out_le, mode, d_le,
                           n_le, num_bytes);
     if (ret != 0) {
-        return ret;
+        goto exit;
     }
 
     reverse_buf(out_le, output, num_bytes);
+    ret = 0;
 
+exit:
     mbedtls_platform_zeroize(n_le, sizeof(n_le));
     mbedtls_platform_zeroize(d_le, sizeof(d_le));
+    /* in_le is also out_le. */
     mbedtls_platform_zeroize(in_le, sizeof(in_le));
-    mbedtls_platform_zeroize(out_le, sizeof(out_le));
 
-    return 0;
+    return ret;
 }
 
 /* Adapter between the mbedtls RNG signature and the callback shape used by
@@ -457,17 +477,19 @@ int mbedtls_ls_otbn_rsa_modexp(const uint8_t *input, uint8_t *output,
                                const uint8_t *exp, const uint8_t *n,
                                size_t num_bytes, bool is_public)
 {
-    uint8_t n_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t exp_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t in_le[MBEDTLS_MPI_MAX_SIZE];
-    uint8_t out_le[MBEDTLS_MPI_MAX_SIZE];
+    uint8_t n_le[RSA_MODEOP_MAX_BYTES];
+    uint8_t exp_le[RSA_MODEOP_MAX_BYTES];
+    uint8_t in_le[RSA_MODEOP_MAX_BYTES];
+    /* in_le is also out_le: see mbedtls_rsa_public_otbn(). */
+    uint8_t *out_le = in_le;
     uint32_t e_val = 0;
     bool is_f4 = false;
     uint32_t mode;
     int ret;
 
-    if (num_bytes != 128 && num_bytes != 192 &&
-        num_bytes != 256 && num_bytes != 384 && num_bytes != 512) {
+    if (num_bytes > sizeof(n_le) ||
+        (num_bytes != 128 && num_bytes != 192 &&
+         num_bytes != 256 && num_bytes != 384 && num_bytes != 512)) {
         return -ENOTSUP;
     }
 
@@ -496,8 +518,8 @@ int mbedtls_ls_otbn_rsa_modexp(const uint8_t *input, uint8_t *output,
 exit:
     mbedtls_platform_zeroize(n_le, sizeof(n_le));
     mbedtls_platform_zeroize(exp_le, sizeof(exp_le));
+    /* in_le is also out_le. */
     mbedtls_platform_zeroize(in_le, sizeof(in_le));
-    mbedtls_platform_zeroize(out_le, sizeof(out_le));
 
     return ret;
 }

@@ -634,7 +634,7 @@ int mbedtls_sm3_finish_dma(mbedtls_sm3_context *ctx,
 #if !defined(CONFIG_MBEDTLS_LINKEDSEMI_OTBN_DELEGATION_CLIENT)
 #include "otbn_hash.h"
 
-#define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
+#include "ls_otbn_err_mbedtls.h" /* MBEDTLS_ERR_LS_OTBN_BUSY */
 
 static int otbn_err_to_mbedtls(int err)
 {
@@ -884,7 +884,7 @@ static void dma_conf(uint32_t source_address, uint32_t dest_address, size_t ilen
     memset(&dma_cfg, 0, sizeof(dma_cfg));
     dma_cfg.dma_slot            = DMA_SHA256;
     dma_cfg.channel_direction   = MEMORY_TO_PERIPHERAL;
-    dma_cfg.complete_callback_en= 0;
+    dma_cfg.complete_callback_en= 0;    
     dma_cfg.channel_priority    = 0;
     dma_cfg.source_data_size    = 4;
     dma_cfg.dest_data_size      = 4;

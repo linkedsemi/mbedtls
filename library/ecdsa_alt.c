@@ -51,7 +51,7 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_DECLARE(mbedtls_otbn, CONFIG_LINKEDSEMI_OTBN_LOG_LEVEL);
 #define MAX_ECC_CURVE_SIZE   64
-#define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
+#include "ls_otbn_err_mbedtls.h" /* MBEDTLS_ERR_LS_OTBN_BUSY */
 #define ASSERT_MBEDTLS(error) {if(error){__ASSERT_PRINT("mbedtls :stack is too small\n"); err = MBEDTLS_ERR_ECP_BUFFER_TOO_SMALL; goto exit;}}
 
 void mbedtls_ls_otbn_moudle_init(void);

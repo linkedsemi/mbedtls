@@ -297,7 +297,7 @@ int mbedtls_sha512_finish(mbedtls_sha512_context *ctx,
 
 #if defined(CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_OTBN_ALT)
 
-#define MBEDTLS_ERR_LS_OTBN_BUSY -0x135
+#include "ls_otbn_err_mbedtls.h" /* MBEDTLS_ERR_LS_OTBN_BUSY */
 
 static int otbn_err_to_mbedtls(int err)
 {
