@@ -23,16 +23,6 @@ static K_MUTEX_DEFINE(aes_hw_mutex);
 void mbedtls_aes_init(mbedtls_aes_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_aes_context));
-#if CONFIG_SOC_LS1010
-        HAL_LSCRYPT_Init();
-#elif CONFIG_SOC_LSQSH
-    #if CONFIG_AES_CLOCK_RESET
-        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CRYPT_MASK;
-        SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CRYPT_MASK;
-        SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CRYPT_MASK;
-        SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CRYPT_MASK;
-    #endif
-#endif
 }
 
 void mbedtls_aes_free(mbedtls_aes_context *ctx)
@@ -56,12 +46,6 @@ void mbedtls_aes_free(mbedtls_aes_context *ctx)
     LSCRYPT->KEY5 = 0;
     LSCRYPT->KEY6 = 0;
     LSCRYPT->KEY7 = 0;
-#if CONFIG_SOC_LS1010
-        HAL_LSCRYPT_DeInit();
-#elif CONFIG_SOC_LSQSH
-    /* 不能关时钟：所有 AES context 共享同一套硬件 KEY 寄存器，
-     * 关掉会导致其他 context 无法访问硬件。 */
-#endif
     k_mutex_unlock(&aes_hw_mutex);
 }
 
