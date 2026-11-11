@@ -105,17 +105,12 @@ static int aes_hw_setkey(const unsigned char *key, unsigned int keybits)
 int mbedtls_aes_setkey_enc(mbedtls_aes_context *ctx, const unsigned char *key,
                            unsigned int keybits)
 {
-    int ret;
-
     if (ctx == NULL || key == NULL) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    k_mutex_lock(&aes_hw_mutex, K_FOREVER);
-    ret = aes_hw_setkey(key, keybits);
-    k_mutex_unlock(&aes_hw_mutex);
-    if (ret != 0) {
-        return ret;
+    if (keybits != 128 && keybits != 192 && keybits != 256) {
+        return MBEDTLS_ERR_AES_INVALID_KEY_LENGTH;
     }
 
     /* Save key in context so crypt_ecb/crypt_cbc/crypt_ctr can restore it
