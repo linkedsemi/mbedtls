@@ -425,6 +425,53 @@ exit:
     return ret;
 }
 
+/* Add a 32-bit value to a 16-byte big-endian counter with full carry. */
+static void aes_ctr_counter_add(uint8_t counter[16], uint32_t blocks)
+{
+    uint32_t x;
+
+    if (blocks == 0u) {
+        return;
+    }
+
+    x = MBEDTLS_GET_UINT32_BE(counter, 12);   /* low word */
+    x += blocks;
+    MBEDTLS_PUT_UINT32_BE(x, counter, 12);
+
+    /* Carried out of the low word: propagate into the higher words. */
+    if (x < blocks) {
+        int i;
+        for (i = 2; i >= 0; i--) {
+            uint32_t y = MBEDTLS_GET_UINT32_BE(counter, (unsigned)(i << 2));
+            y += 1u;
+            MBEDTLS_PUT_UINT32_BE(y, counter, (unsigned)(i << 2));
+            if (y != 0u) {
+                break;
+            }
+        }
+    }
+}
+
+/* Run `count` CTR blocks through the hardware engine. IVR must already hold
+ * the starting counter, and the engine configured for CTR encrypt.
+ * Caller holds aes_hw_mutex. */
+static void aes_ctr_hw_blocks(uint32_t *in, uint32_t *out, size_t count)
+{
+    while (count--) {
+        LSCRYPT->DATA3 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA2 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA1 = __builtin_bswap32(*in++);
+        LSCRYPT->DATA0 = __builtin_bswap32(*in++);
+        REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
+        while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
+        LSCRYPT->ICFR = CRYPT_AESIF_MASK;
+        *out++ = __builtin_bswap32(LSCRYPT->RES3);
+        *out++ = __builtin_bswap32(LSCRYPT->RES2);
+        *out++ = __builtin_bswap32(LSCRYPT->RES1);
+        *out++ = __builtin_bswap32(LSCRYPT->RES0);
+    }
+}
+
 int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           size_t length,
                           size_t *nc_off,
@@ -434,55 +481,52 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
                           unsigned char *output)
 {
     int ret = MBEDTLS_ERR_ERROR_CORRUPTION_DETECTED;
-    size_t i = 0;
-    size_t offset;
+    size_t processed = 0;
+    size_t stream_off;
 
     if (ctx == NULL || nc_off == NULL || nonce_counter == NULL ||
         stream_block == NULL || input == NULL || output == NULL) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
-    offset = *nc_off;
+    /* Consumed key stream */
+    stream_off = *nc_off;
 
-    if (offset > 0x0F) {
+    if (stream_off > 0x0F) {
         return MBEDTLS_ERR_AES_BAD_INPUT_DATA;
     }
 
     k_mutex_lock(&aes_hw_mutex, K_FOREVER);
 
-    /* 1. Resume from a partially-consumed keystream block left by a previous
-     * call. nonce_counter already points past this block, so no new keystream
-     * is generated here. */
-    if (offset != 0) {
-        size_t n = 16 - offset;
-        if (n > length) {
-            n = length;
+    if (stream_off != 0) {
+        size_t take = 16 - stream_off; // default: take all remaining key stream
+        if (take > length) {
+            take = length;
         }
-        mbedtls_xor(&output[i], &input[i], &stream_block[offset], n);
-        i += n;
-        offset = (offset + n) % 16;
+        mbedtls_xor(&output[processed], &input[processed], &stream_block[stream_off], take);
+        processed += take;
+        stream_off = (stream_off + take) % 16;
     }
 
     /* 2. Whole 16-byte blocks via the hardware CTR engine (fast path). Its
      * counter auto-increment does not carry across the 32-bit word boundary
-     * (IVR0 -> IVR1), so a run must not pass a low-word wrap: stop before it
-     * and reload IVR from the software-incremented nonce_counter. */
-    size_t full_blocks = (length - i) / 16;
-    size_t done = 0;
-    while (done < full_blocks) {
-        uint32_t *u32_counter = (uint32_t *)nonce_counter;
-        uint32_t low = __builtin_bswap32(u32_counter[3]);
+     * (IVR0 -> IVR1), so a run must not pass a low-word wrap. Since the block
+     * count is < 2^32, at most one wrap occurs: split into at most two runs,
+     * reloading IVR once in between. */
+    size_t full_blocks = (length - processed) / 16;
+    if (full_blocks != 0) {
+        unsigned char iv[16];
+        uint32_t *u32_iv = (uint32_t *)iv;
+        memcpy(iv, nonce_counter, 16);
 
-        size_t batch = full_blocks - done;
-        if (low != 0u) {
-            size_t until_wrap = (size_t)(0x100000000ULL - (uint64_t)low);
-            if (until_wrap < batch) {
-                batch = until_wrap;
-            }
+        uint32_t low_word = __builtin_bswap32(u32_iv[3]);
+
+        uint32_t blocks_before_wrap = (uint32_t)(0u - low_word);
+
+        size_t first_blocks = full_blocks; // default: all blocks in one run
+        if (low_word != 0u && blocks_before_wrap < (uint32_t)full_blocks) {
+            first_blocks = blocks_before_wrap; // would wrap around: cut off before the wrap
         }
-
-        uint32_t *in = (uint32_t *)(input + i);
-        uint32_t *out = (uint32_t *)(output + i);
 
         ret = aes_hw_setkey(ctx->key, ctx->keybits);
         if (ret != 0) {
@@ -491,36 +535,39 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
 
         aes_config(false, true, false, false, false, 0x0, 0x2);
 
-        LSCRYPT->IVR3 = __builtin_bswap32(*u32_counter++);
-        LSCRYPT->IVR2 = __builtin_bswap32(*u32_counter++);
-        LSCRYPT->IVR1 = __builtin_bswap32(*u32_counter++);
-        LSCRYPT->IVR0 = __builtin_bswap32(*u32_counter++);
+        uint32_t *in = (uint32_t *)(input + processed);
+        uint32_t *out = (uint32_t *)(output + processed);
 
-        for (size_t b = 0; b < batch; b++) {
-            LSCRYPT->DATA3 = __builtin_bswap32(*in++);
-            LSCRYPT->DATA2 = __builtin_bswap32(*in++);
-            LSCRYPT->DATA1 = __builtin_bswap32(*in++);
-            LSCRYPT->DATA0 = __builtin_bswap32(*in++);
-            REG_FIELD_WR(LSCRYPT->CR, CRYPT_GO, 1);
-            while (REG_FIELD_RD(LSCRYPT->SR, CRYPT_AESRIF) == 0);
-            LSCRYPT->ICFR = CRYPT_AESIF_MASK;
-            *out++ = __builtin_bswap32(LSCRYPT->RES3);
-            *out++ = __builtin_bswap32(LSCRYPT->RES2);
-            *out++ = __builtin_bswap32(LSCRYPT->RES1);
-            *out++ = __builtin_bswap32(LSCRYPT->RES0);
+        LSCRYPT->IVR3 = __builtin_bswap32(u32_iv[0]);
+        LSCRYPT->IVR2 = __builtin_bswap32(u32_iv[1]);
+        LSCRYPT->IVR1 = __builtin_bswap32(u32_iv[2]);
+        LSCRYPT->IVR0 = __builtin_bswap32(u32_iv[3]);
+        aes_ctr_hw_blocks(in, out, first_blocks);
+        in  += first_blocks * 4;
+        out += first_blocks * 4;
+
+        if (first_blocks < full_blocks) {
+            size_t second_blocks = full_blocks - first_blocks;
+            aes_ctr_counter_add(iv, (uint32_t)first_blocks);
+            LSCRYPT->IVR3 = __builtin_bswap32(u32_iv[0]);
+            LSCRYPT->IVR2 = __builtin_bswap32(u32_iv[1]);
+            LSCRYPT->IVR1 = __builtin_bswap32(u32_iv[2]);
+            LSCRYPT->IVR0 = __builtin_bswap32(u32_iv[3]);
+            aes_ctr_hw_blocks(in, out, second_blocks);
+            in  += second_blocks * 4;
+            out += second_blocks * 4;
         }
 
-        for (size_t b = 0; b < batch; b++) {
-            mbedtls_ctr_increment_counter(nonce_counter);
-        }
+        processed += full_blocks * 16;
 
-        i += batch * 16;
-        done += batch;
+        /* Software counter jumps to its final value in one step, instead of
+         * incrementing per batch to stay in lockstep with the hardware. */
+        aes_ctr_counter_add(nonce_counter, (uint32_t)full_blocks);
     }
 
     /* 3. Tail bytes that don't fill a whole block: generate one keystream
      * block and keep the unused part in stream_block for the next call. */
-    if (i < length) {
+    if (processed < length) {
         ret = aes_crypt_ecb_raw(ctx, MBEDTLS_AES_ENCRYPT,
                                 nonce_counter, stream_block);
         if (ret != 0) {
@@ -528,14 +575,14 @@ int mbedtls_aes_crypt_ctr(mbedtls_aes_context *ctx,
         }
         mbedtls_ctr_increment_counter(nonce_counter);
 
-        size_t n = length - i;
-        mbedtls_xor(&output[i], &input[i], stream_block, n);
-        i += n;
-        offset = n;
+        size_t take = length - processed;
+        mbedtls_xor(&output[processed], &input[processed], stream_block, take);
+        processed += take;
+        stream_off = take;
     }
 
-    /* Capture offset for future resumption. */
-    *nc_off = offset;
+    /* Capture stream_off for future resumption. */
+    *nc_off = stream_off;
 
     ret = 0;
 
