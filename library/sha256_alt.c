@@ -11,9 +11,6 @@
 
 #if CONFIG_SOC_LSQSH
     #include "qsh.h"
-    #if CONFIG_SHA256_CLOCK_RESET
-        #include "reg_sysc_sec_cpu.h"
-    #endif
 #endif
 
 #if defined(CONFIG_MBEDTLS_SHA224_SHA256_LINKEDSEMI_OTBN_ALT)||defined(CONFIG_MBEDTLS_SM3_LINKEDSEMI_OTBN_ALT)
@@ -155,16 +152,6 @@ static void ls_sha_hw_init(void)
         mbedtls_mutex_init(&doneLock);
         done_lock_initialized = true;
     }
-    #if CONFIG_SOC_LS1010
-        HAL_LSSHA_Init();
-    #elif CONFIG_SOC_LSQSH
-        #if CONFIG_SHA256_CLOCK_RESET
-            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
-            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_CLR_CALC_SHA_MASK;
-            SYSC_SEC_CPU->PD_CPU_SRST[1] = SYSC_SEC_CPU_SRST_SET_CALC_SHA_MASK;
-            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_SET_CALC_SHA_MASK;
-        #endif
-    #endif
 #if defined(CONFIG_DMA)
     k_sem_init(&dma_sem, 0, 1);
     k_sem_init(&sha224_sha256_sm3_sem, 0, 1);
@@ -173,17 +160,6 @@ static void ls_sha_hw_init(void)
         irq_enable(CALC_SHA_IRQN);
     #endif
 #endif
-}
-
-static void ls_sha_hw_deinit(void)
-{
-    #if CONFIG_SOC_LS1010
-        HAL_LSSHA_DeInit();
-    #elif CONFIG_SOC_LSQSH
-        #if CONFIG_SHA256_CLOCK_RESET
-            SYSC_SEC_CPU->PD_CPU_CLKG[1] = SYSC_SEC_CPU_CLKG_CLR_CALC_SHA_MASK;
-        #endif
-    #endif
 }
 
 static int ls_sha_hw_update_core(LS_SHA_ALT_CTX_TYPE *c,
@@ -247,7 +223,6 @@ void mbedtls_sm3_free(mbedtls_sm3_context *ctx)
     }
 
     mbedtls_platform_zeroize(ctx, sizeof(*ctx));
-    ls_sha_hw_deinit();
 }
 
 #endif /* CONFIG_MBEDTLS_SM3_LINKEDSEMI_HARDWARE_ALT */
@@ -267,7 +242,6 @@ void mbedtls_sha256_free(mbedtls_sha256_context *ctx)
     }
 
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha256_context));
-    ls_sha_hw_deinit();
 }
 
 int mbedtls_sha256_starts(mbedtls_sha256_context *ctx, int is224)

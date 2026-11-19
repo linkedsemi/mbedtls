@@ -5,10 +5,6 @@
 #include "mbedtls/platform_util.h"
 #include "stdio.h"
 
-#if CONFIG_SHA512_CLOCK_RESET
-#include "reg_sysc_sec_cpu.h"
-#endif
-
 #if defined(CONFIG_MBEDTLS_SHA384_SHA512_LINKEDSEMI_OTBN_ALT)
 #include "otbn_hash.h"
 #endif
@@ -86,12 +82,6 @@ static void block_calculate(uint32_t addr, uint32_t block_number)
 void mbedtls_sha512_init(mbedtls_sha512_context *ctx)
 {
     memset(ctx, 0, sizeof(mbedtls_sha512_context));
-#if CONFIG_SHA512_CLOCK_RESET
-    SYSC_SEC_CPU->PD_CPU_CLKG[0] = SYSC_SEC_CPU_CLKG_CLR_SHA512_MASK;
-    SYSC_SEC_CPU->PD_CPU_SRST[0] = SYSC_SEC_CPU_SRST_CLR_SHA512_MASK;
-    SYSC_SEC_CPU->PD_CPU_SRST[0] = SYSC_SEC_CPU_SRST_SET_SHA512_MASK;
-    SYSC_SEC_CPU->PD_CPU_CLKG[0] = SYSC_SEC_CPU_CLKG_SET_SHA512_MASK;
-#endif
     mbedtls_mutex_init(&doneLock);
     k_sem_init(&sha384_sha512_sem, 0, 1);
     buffer_idx = 0;
@@ -110,9 +100,6 @@ void mbedtls_sha512_free(mbedtls_sha512_context *ctx)
     buffer_idx = 0;
     total_cnt = 0;
     mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sha512_context));
-#if CONFIG_SHA512_CLOCK_RESET
-    SYSC_SEC_CPU->PD_CPU_CLKG[0] = SYSC_SEC_CPU_CLKG_CLR_SHA512_MASK;
-#endif
 }
 
 int mbedtls_sha512_starts(mbedtls_sha512_context *ctx, int is384)
