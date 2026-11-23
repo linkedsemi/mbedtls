@@ -122,6 +122,11 @@ int mbedtls_sm4_crypt_ecb(mbedtls_sm4_context *ctx, int mode, size_t length,
         return -EINVAL;
     }
 
+    /* SM4_CALC_LEN is a 14-bit field: at most 16384 blocks (256 KiB) per call. */
+    if (length / SM4_BLOCK_SIZE > 16384) {
+        return -EINVAL;
+    }
+
     uint32_t *in = (uint32_t *)input;
     uint32_t *out = (uint32_t *)output;
 
@@ -376,7 +381,6 @@ int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
     unsigned char keystream[16];
     const unsigned char *in = input;
     unsigned char *out = output;
-    const unsigned char *ct;
     size_t left;
 
     if (ctx == NULL || iv == NULL || tag == NULL) {
@@ -400,6 +404,13 @@ int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
     j0[12] = j0[13] = j0[14] = 0;
     j0[15] = 1;
     memcpy(counter, j0, 16);
+
+    /* GHASH runs over the ciphertext. For decrypt that is `input` and must be
+     * hashed BEFORE GCTR overwrites it (in-place input==output case); for
+     * encrypt it is `output`, only available after GCTR. */
+    if (mode == MBEDTLS_SM4_GCM_DECRYPT) {
+        ghash(ctx->H, add, add_len, input, length, s);
+    }
 
     k_mutex_lock(&sm4_hw_mutex, K_FOREVER);
     sm4_hw_setkey(ctx->cipher.key);
@@ -425,9 +436,11 @@ int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
 
     k_mutex_unlock(&sm4_hw_mutex);
 
-    /* GHASH is over the ciphertext; tag = S ^ E_K(J0). */
-    ct = (mode == MBEDTLS_SM4_GCM_ENCRYPT) ? output : input;
-    ghash(ctx->H, add, add_len, ct, length, s);
+    if (mode == MBEDTLS_SM4_GCM_ENCRYPT) {
+        ghash(ctx->H, add, add_len, output, length, s);
+    }
+
+    /* tag = S ^ E_K(J0). */
     for (size_t i = 0; i < tag_len; i++) {
         tag[i] = s[i] ^ ej0[i];
     }
