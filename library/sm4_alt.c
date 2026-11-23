@@ -171,6 +171,12 @@ int mbedtls_sm4_crypt_ctr(mbedtls_sm4_context *ctx, size_t length, size_t *nc_of
 
     n = *nc_off;
 
+    /* mbedtls CTR contract: nc_off is an index into stream_block, so values
+     * above 15 would read past it (AES alt rejects them the same way). */
+    if (n > 0x0F) {
+        return -EINVAL;
+    }
+
     k_mutex_lock(&sm4_hw_mutex, K_FOREVER);
 
     /* Restore this context's key — another context may have overwritten the
