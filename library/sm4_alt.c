@@ -198,18 +198,9 @@ int mbedtls_sm4_crypt_ctr(mbedtls_sm4_context *ctx, size_t length, size_t *nc_of
  *
  * One-shot authenticated encryption/decryption mirroring the mbedtls GCM API
  * (crypt_and_tag / auth_decrypt). E_K runs in hardware via
- * sm4_hw_encrypt_block; GHASH is software, ported from the reference
- * ls_hal_sm4.c. Only the standard 12-byte nonce is supported. */
-
-#define BSWAP_64(x)                                                  \
-    ((((uint64_t)(x) & 0x00000000000000ffULL) << 56) |               \
-     (((uint64_t)(x) & 0x000000000000ff00ULL) << 40) |               \
-     (((uint64_t)(x) & 0x0000000000ff0000ULL) << 24) |               \
-     (((uint64_t)(x) & 0x00000000ff000000ULL) << 8)  |               \
-     (((uint64_t)(x) & 0x000000ff00000000ULL) >> 8)  |               \
-     (((uint64_t)(x) & 0x0000ff0000000000ULL) >> 24) |               \
-     (((uint64_t)(x) & 0x00ff000000000000ULL) >> 40) |               \
-     (((uint64_t)(x) & 0xff00000000000000ULL) >> 56))
+ * sm4_hw_encrypt_block; GHASH is a software 4-bit-table implementation ported
+ * from wolfSSL's GCM_TABLE_4BIT (the fastest software GHASH on RV32/e906).
+ * Only the standard 12-byte nonce is supported. */
 
 static void xor_bytes(unsigned char *dst, const unsigned char *a,
                       const unsigned char *b, size_t n)
@@ -219,84 +210,229 @@ static void xor_bytes(unsigned char *dst, const unsigned char *a,
     }
 }
 
-/* GHASH core multiply: x = x * y in GF(2^128). Both operands are stored as two
- * 64-bit words in big-endian order (word[0] is the most-significant 64 bits). */
-static void gmult(uint64_t x[2], const uint64_t y[2])
-{
-    uint64_t z[2] = { 0, 0 };
-    uint64_t v[2] = { x[0], x[1] };
+/* Remainder table for the 4-bit multiply, indexed by the top nibble (little-
+ * endian word16 form; the in-memory byte order matches the big-endian block
+ * convention used throughout). */
+static const uint16_t R[32] = {
+    0x0000, 0x201c, 0x4038, 0x6024,
+    0x8070, 0xa06c, 0xc048, 0xe054,
+    0x00e1, 0x20fd, 0x40d9, 0x60c5,
+    0x8091, 0xa08d, 0xc0a9, 0xe0b5,
 
-    for (int i = 0; i < 2; i++) {
-        uint64_t y_tmp = y[i];
-        for (int j = 0; j < 64; j++) {
-            uint64_t mask = 0 - (y_tmp >> 63);
-            z[0] ^= v[0] & mask;
-            z[1] ^= v[1] & mask;
-            uint64_t v1 = (0 - (v[1] & 1)) & 0xe100000000000000ULL;
-            v[1] >>= 1;
-            v[1] |= v[0] << 63;
-            v[0] >>= 1;
-            v[0] ^= v1;
-            y_tmp <<= 1;
-        }
+    0x0000, 0xc201, 0x8403, 0x4602,
+    0x0807, 0xca06, 0x8c04, 0x4e05,
+    0x100e, 0xd20f, 0x940d, 0x560c,
+    0x1809, 0xda08, 0x9c0a, 0x5e0b,
+};
+
+/* x >>= 1 in GF(2^128). Byte 0 is the most-significant byte, so the 0xE1
+ * reduction term is XORed into byte 0 when the value was odd. */
+static void RIGHTSHIFTX(unsigned char *x)
+{
+    int i;
+    int carryIn = 0;
+    unsigned char borrow = (unsigned char)((0x00U - (x[15] & 0x01U)) & 0xE1U);
+
+    for (i = 0; i < 16; i++) {
+        int carryOut = (x[i] & 0x01) << 7;
+        x[i] = (unsigned char)((x[i] >> 1) | carryIn);
+        carryIn = carryOut;
+    }
+    x[0] ^= borrow;
+}
+
+/* z8 >>= 4 (nibble right-shift), used to build the pre-rotated table half. */
+static void Shift4_M0(unsigned char *r8, const unsigned char *z8)
+{
+    int i;
+    for (i = 15; i > 0; i--) {
+        r8[i] = (unsigned char)((z8[i - 1] << 4) | (z8[i] >> 4));
+    }
+    r8[0] = (unsigned char)(z8[0] >> 4);
+}
+
+/* buf[0..7] = sz * 8 as a 64-bit big-endian value. */
+static void FlattenSzInBits(unsigned char *buf, uint32_t sz)
+{
+    uint32_t szHi = sz >> 29;
+    sz <<= 3;
+
+    buf[0] = (unsigned char)(szHi >> 24);
+    buf[1] = (unsigned char)(szHi >> 16);
+    buf[2] = (unsigned char)(szHi >> 8);
+    buf[3] = (unsigned char)szHi;
+    buf[4] = (unsigned char)(sz >> 24);
+    buf[5] = (unsigned char)(sz >> 16);
+    buf[6] = (unsigned char)(sz >> 8);
+    buf[7] = (unsigned char)sz;
+}
+
+/* Build the 32-entry (16 normal + 16 pre-rotated) 4-bit multiply table from
+ * H = E_K(0^128) held in raw big-endian byte order. */
+static void GenerateM0(unsigned char m[32][16], const unsigned char *H)
+{
+    int i;
+
+    /* 0 times -> 0x0 */
+    memset(m[0x0], 0, 16);
+    /* 1 times -> 0x8 */
+    memcpy(m[0x8], H, 16);
+    /* 2 times -> 0x4 */
+    memcpy(m[0x4], m[0x8], 16);
+    RIGHTSHIFTX(m[0x4]);
+    /* 4 times -> 0x2 */
+    memcpy(m[0x2], m[0x4], 16);
+    RIGHTSHIFTX(m[0x2]);
+    /* 8 times -> 0x1 */
+    memcpy(m[0x1], m[0x2], 16);
+    RIGHTSHIFTX(m[0x1]);
+
+    memcpy(m[0x3], m[0x2], 16); xor_bytes(m[0x3], m[0x3], m[0x1], 16);
+    memcpy(m[0x5], m[0x4], 16); xor_bytes(m[0x5], m[0x5], m[0x1], 16);
+    memcpy(m[0x6], m[0x4], 16); xor_bytes(m[0x6], m[0x6], m[0x2], 16);
+    memcpy(m[0x7], m[0x4], 16); xor_bytes(m[0x7], m[0x7], m[0x3], 16);
+    memcpy(m[0x9], m[0x8], 16); xor_bytes(m[0x9], m[0x9], m[0x1], 16);
+    memcpy(m[0xa], m[0x8], 16); xor_bytes(m[0xa], m[0xa], m[0x2], 16);
+    memcpy(m[0xb], m[0x8], 16); xor_bytes(m[0xb], m[0xb], m[0x3], 16);
+    memcpy(m[0xc], m[0x8], 16); xor_bytes(m[0xc], m[0xc], m[0x4], 16);
+    memcpy(m[0xd], m[0x8], 16); xor_bytes(m[0xd], m[0xd], m[0x5], 16);
+    memcpy(m[0xe], m[0x8], 16); xor_bytes(m[0xe], m[0xe], m[0x6], 16);
+    memcpy(m[0xf], m[0x8], 16); xor_bytes(m[0xf], m[0xf], m[0x7], 16);
+
+    for (i = 0; i < 16; i++) {
+        Shift4_M0(m[16 + i], m[i]);
+    }
+}
+
+/* x = x * H in GF(2^128) using the 4-bit table. 32-bit word-rotate variant,
+ * the fastest software form on RV32. */
+static void GMULT(unsigned char *x, unsigned char m[32][16])
+{
+    int i;
+    uint32_t z8[4] = { 0, 0, 0, 0 };
+    unsigned char a;
+    uint32_t *x8 = (uint32_t *)x;
+    uint32_t *m8;
+    unsigned char xi;
+    uint32_t n7, n6, n5, n4, n3, n2, n1, n0;
+
+    for (i = 15; i > 0; i--) {
+        xi = x[i];
+
+        /* XOR in (msn * H) */
+        m8 = (uint32_t *)m[xi & 0xf];
+        z8[0] ^= m8[0]; z8[1] ^= m8[1]; z8[2] ^= m8[2]; z8[3] ^= m8[3];
+
+        /* Cache top byte for remainder calculations - lost in rotate. */
+        a = (unsigned char)(z8[3] >> 24);
+
+        /* Rotate Z by 8 bits. */
+        z8[3] = (z8[2] >> 24) | (z8[3] << 8);
+        z8[2] = (z8[1] >> 24) | (z8[2] << 8);
+        z8[1] = (z8[0] >> 24) | (z8[1] << 8);
+        z8[0] <<= 8;
+
+        /* XOR in (msn * remainder) [pre-rotated by 4 bits]. */
+        z8[0] ^= (uint32_t)R[16 + (a & 0xf)];
+
+        xi >>= 4;
+        /* XOR in next significant nibble (XORed with H) * remainder. */
+        m8 = (uint32_t *)m[xi];
+        a ^= (unsigned char)(m8[3] >> 20);
+        z8[0] ^= (uint32_t)R[a >> 4];
+
+        /* XOR in (next significant nibble * H) [pre-rotated by 4 bits]. */
+        m8 = (uint32_t *)m[16 + xi];
+        z8[0] ^= m8[0]; z8[1] ^= m8[1];
+        z8[2] ^= m8[2]; z8[3] ^= m8[3];
     }
 
-    x[0] = z[0];
-    x[1] = z[1];
+    xi = x[0];
+
+    /* XOR in most significant nibble * H. */
+    m8 = (uint32_t *)m[xi & 0xf];
+    z8[0] ^= m8[0]; z8[1] ^= m8[1]; z8[2] ^= m8[2]; z8[3] ^= m8[3];
+
+    /* Cache top byte for remainder calculations - lost in rotate. */
+    a = (unsigned char)((z8[3] >> 24) & 0xf);
+
+    /* Rotate z by 4 bits. */
+    n7 = z8[3] & 0xf0f0f0f0U;
+    n6 = z8[3] & 0x0f0f0f0fU;
+    n5 = z8[2] & 0xf0f0f0f0U;
+    n4 = z8[2] & 0x0f0f0f0fU;
+    n3 = z8[1] & 0xf0f0f0f0U;
+    n2 = z8[1] & 0x0f0f0f0fU;
+    n1 = z8[0] & 0xf0f0f0f0U;
+    n0 = z8[0] & 0x0f0f0f0fU;
+    z8[3] = (n7 >> 4) | (n6 << 12) | (n4 >> 20);
+    z8[2] = (n5 >> 4) | (n4 << 12) | (n2 >> 20);
+    z8[1] = (n3 >> 4) | (n2 << 12) | (n0 >> 20);
+    z8[0] = (n1 >> 4) | (n0 << 12);
+
+    /* XOR in most significant nibble * remainder. */
+    z8[0] ^= (uint32_t)R[a];
+    /* XOR in next significant nibble * H. */
+    m8 = (uint32_t *)m[xi >> 4];
+    z8[0] ^= m8[0]; z8[1] ^= m8[1]; z8[2] ^= m8[2]; z8[3] ^= m8[3];
+
+    /* Write back result. */
+    x8[0] = z8[0]; x8[1] = z8[1]; x8[2] = z8[2]; x8[3] = z8[3];
 }
 
 /* One-shot GHASH over AAD (a) and ciphertext (c); s receives the 16-byte
- * GHASH output. big_h is E_K(0) held in big-endian u64 form. */
-static void ghash(const uint64_t big_h[2],
+ * GHASH output. m is the per-key 4-bit multiply table. */
+static void ghash(unsigned char m[32][16],
                   const unsigned char *a, size_t a_size,
                   const unsigned char *c, size_t c_size,
                   unsigned char *s)
 {
-    uint64_t x[2] = { 0, 0 };
-    uint64_t block[2];
-    size_t n;
+    unsigned char x[16];
+    unsigned char scratch[16];
+    size_t blocks, partial;
 
-    n = a_size / 16;
-    while (n--) {
-        memcpy(block, a, 16);
-        x[0] ^= BSWAP_64(block[0]);
-        x[1] ^= BSWAP_64(block[1]);
-        gmult(x, big_h);
-        a += 16;
-    }
-    n = a_size % 16;
-    if (n) {
-        memset(block, 0, 16);
-        memcpy(block, a, n);
-        x[0] ^= BSWAP_64(block[0]);
-        x[1] ^= BSWAP_64(block[1]);
-        gmult(x, big_h);
-    }
+    memset(x, 0, 16);
 
-    n = c_size / 16;
-    while (n--) {
-        memcpy(block, c, 16);
-        x[0] ^= BSWAP_64(block[0]);
-        x[1] ^= BSWAP_64(block[1]);
-        gmult(x, big_h);
-        c += 16;
-    }
-    n = c_size % 16;
-    if (n) {
-        memset(block, 0, 16);
-        memcpy(block, c, n);
-        x[0] ^= BSWAP_64(block[0]);
-        x[1] ^= BSWAP_64(block[1]);
-        gmult(x, big_h);
+    /* Hash in A, the Additional Authentication Data. */
+    if (a_size != 0 && a != NULL) {
+        blocks = a_size / 16;
+        partial = a_size % 16;
+        while (blocks--) {
+            xor_bytes(x, x, a, 16);
+            GMULT(x, m);
+            a += 16;
+        }
+        if (partial != 0) {
+            memset(scratch, 0, 16);
+            memcpy(scratch, a, partial);
+            xor_bytes(x, x, scratch, 16);
+            GMULT(x, m);
+        }
     }
 
-    /* Lengths of A and C in bits, as big-endian 64-bit values. */
-    x[0] ^= (uint64_t)a_size * 8;
-    x[1] ^= (uint64_t)c_size * 8;
-    gmult(x, big_h);
+    /* Hash in C, the Ciphertext. */
+    if (c_size != 0 && c != NULL) {
+        blocks = c_size / 16;
+        partial = c_size % 16;
+        while (blocks--) {
+            xor_bytes(x, x, c, 16);
+            GMULT(x, m);
+            c += 16;
+        }
+        if (partial != 0) {
+            memset(scratch, 0, 16);
+            memcpy(scratch, c, partial);
+            xor_bytes(x, x, scratch, 16);
+            GMULT(x, m);
+        }
+    }
 
-    x[0] = BSWAP_64(x[0]);
-    x[1] = BSWAP_64(x[1]);
+    /* Hash in the lengths of A and C in bits. */
+    FlattenSzInBits(&scratch[0], (uint32_t)a_size);
+    FlattenSzInBits(&scratch[8], (uint32_t)c_size);
+    xor_bytes(x, x, scratch, 16);
+    GMULT(x, m);
+
     memcpy(s, x, 16);
 }
 
@@ -332,7 +468,6 @@ void mbedtls_sm4_gcm_free(mbedtls_sm4_gcm_context *ctx)
 int mbedtls_sm4_gcm_setkey(mbedtls_sm4_gcm_context *ctx, const unsigned char *key)
 {
     unsigned char h[16];
-    uint64_t big_h[2];
 
     if (ctx == NULL || key == NULL) {
         return -EINVAL;
@@ -340,16 +475,14 @@ int mbedtls_sm4_gcm_setkey(mbedtls_sm4_gcm_context *ctx, const unsigned char *ke
 
     memcpy(ctx->cipher.key, key, SM4_KEY_SIZE);
 
-    /* H = E_K(0^128), the GHASH key, kept in big-endian form for gmult(). */
+    /* H = E_K(0^128), the GHASH key; expand it into the 4-bit multiply table. */
     memset(h, 0, sizeof(h));
     k_mutex_lock(&sm4_hw_mutex, K_FOREVER);
     sm4_hw_setkey(ctx->cipher.key);
     sm4_hw_encrypt_block(h, h);
     k_mutex_unlock(&sm4_hw_mutex);
 
-    memcpy(big_h, h, 16);
-    ctx->H[0] = BSWAP_64(big_h[0]);
-    ctx->H[1] = BSWAP_64(big_h[1]);
+    GenerateM0(ctx->M0, h);
 
     return 0;
 }
@@ -396,7 +529,7 @@ int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
      * hashed BEFORE GCTR overwrites it (in-place input==output case); for
      * encrypt it is `output`, only available after GCTR. */
     if (mode == MBEDTLS_SM4_GCM_DECRYPT) {
-        ghash(ctx->H, add, add_len, input, length, s);
+        ghash(ctx->M0, add, add_len, input, length, s);
     }
 
     k_mutex_lock(&sm4_hw_mutex, K_FOREVER);
@@ -424,7 +557,7 @@ int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
     k_mutex_unlock(&sm4_hw_mutex);
 
     if (mode == MBEDTLS_SM4_GCM_ENCRYPT) {
-        ghash(ctx->H, add, add_len, output, length, s);
+        ghash(ctx->M0, add, add_len, output, length, s);
     }
 
     /* tag = S ^ E_K(J0). */

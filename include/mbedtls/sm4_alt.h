@@ -36,7 +36,8 @@ int mbedtls_sm4_crypt_ctr(mbedtls_sm4_context *ctx, size_t length, size_t *nc_of
 
 typedef struct mbedtls_sm4_gcm_context {
     mbedtls_sm4_context cipher;
-    uint64_t H[2];
+    /* Per-key 4-bit GHASH multiply table (16 normal + 16 pre-rotated entries). */
+    uint8_t M0[32][16];
 } mbedtls_sm4_gcm_context;
 
 void mbedtls_sm4_gcm_init(mbedtls_sm4_gcm_context *ctx);
