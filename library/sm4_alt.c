@@ -15,27 +15,14 @@
  * calculate sequence. */
 static K_MUTEX_DEFINE(sm4_hw_mutex);
 
-/* Little-endian byte <-> word helpers, matching the hardware key/data order. */
-static uint32_t u8tou32(const uint8_t *in)
-{
-    return (uint32_t)in[0] | ((uint32_t)in[1] << 8) |
-           ((uint32_t)in[2] << 16) | ((uint32_t)in[3] << 24);
-}
-
-static void u32tou8(uint32_t in, uint8_t *out)
-{
-    *out++ = (uint8_t)in;
-    *out++ = (uint8_t)(in >> 8);
-    *out++ = (uint8_t)(in >> 16);
-    *out++ = (uint8_t)(in >> 24);
-}
-
+/* The e906 is little-endian, so a direct word load/store from the byte arrays
+ * below already matches the hardware key/data order. */
 static void sm4_hw_setkey(const uint8_t *key)
 {
-    LSSM4->SM4_KEY0 = u8tou32(key);
-    LSSM4->SM4_KEY1 = u8tou32(key + 4);
-    LSSM4->SM4_KEY2 = u8tou32(key + 8);
-    LSSM4->SM4_KEY3 = u8tou32(key + 12);
+    LSSM4->SM4_KEY0 = *(const uint32_t *)key;
+    LSSM4->SM4_KEY1 = *(const uint32_t *)(key + 4);
+    LSSM4->SM4_KEY2 = *(const uint32_t *)(key + 8);
+    LSSM4->SM4_KEY3 = *(const uint32_t *)(key + 12);
     LSSM4->SM4_START = SM4_KEY_START_MASK;
     while (REG_FIELD_RD(LSSM4->INTR_RAW, SM4_KEY_END) == 0);
     LSSM4->INTR_CLR = SM4_KEY_END_MASK;
@@ -54,19 +41,19 @@ static void sm4_hw_encrypt_block(const uint8_t *in, uint8_t *out)
     LSSM4->SM4_START = SM4_CALC_START_MASK;
 
     if (REG_FIELD_RD(LSSM4->INTR_RAW, SM4_INTR_DATA) == 1) {
-        LSSM4->CALC_WRD = u8tou32(in);
-        LSSM4->CALC_WRD = u8tou32(in + 4);
-        LSSM4->CALC_WRD = u8tou32(in + 8);
-        LSSM4->CALC_WRD = u8tou32(in + 12);
+        LSSM4->CALC_WRD = *(const uint32_t *)in;
+        LSSM4->CALC_WRD = *(const uint32_t *)(in + 4);
+        LSSM4->CALC_WRD = *(const uint32_t *)(in + 8);
+        LSSM4->CALC_WRD = *(const uint32_t *)(in + 12);
         LSSM4->INTR_CLR = SM4_INTR_DATA_MASK;
     }
 
     while (REG_FIELD_RD(LSSM4->INTR_RAW, SM4_INTR_END) == 0);
     LSSM4->INTR_CLR = SM4_INTR_END_MASK;
-    u32tou8(LSSM4->CALC_RSLT0, out);
-    u32tou8(LSSM4->CALC_RSLT1, out + 4);
-    u32tou8(LSSM4->CALC_RSLT2, out + 8);
-    u32tou8(LSSM4->CALC_RSLT3, out + 12);
+    *(uint32_t *)out = LSSM4->CALC_RSLT0;
+    *(uint32_t *)(out + 4) = LSSM4->CALC_RSLT1;
+    *(uint32_t *)(out + 8) = LSSM4->CALC_RSLT2;
+    *(uint32_t *)(out + 12) = LSSM4->CALC_RSLT3;
 }
 
 /* Big-endian 16-byte counter increment (SM4 CTR convention). */
