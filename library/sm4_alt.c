@@ -202,4 +202,269 @@ int mbedtls_sm4_crypt_ctr(mbedtls_sm4_context *ctx, size_t length, size_t *nc_of
     return 0;
 }
 
+/* ---- SM4 GCM (Galois/Counter Mode) ----
+ *
+ * One-shot authenticated encryption/decryption mirroring the mbedtls GCM API
+ * (crypt_and_tag / auth_decrypt). E_K runs in hardware via
+ * sm4_hw_encrypt_block; GHASH is software, ported from the reference
+ * ls_hal_sm4.c. Only the standard 12-byte nonce is supported. */
+
+#define BSWAP_64(x)                                                  \
+    ((((uint64_t)(x) & 0x00000000000000ffULL) << 56) |               \
+     (((uint64_t)(x) & 0x000000000000ff00ULL) << 40) |               \
+     (((uint64_t)(x) & 0x0000000000ff0000ULL) << 24) |               \
+     (((uint64_t)(x) & 0x00000000ff000000ULL) << 8)  |               \
+     (((uint64_t)(x) & 0x000000ff00000000ULL) >> 8)  |               \
+     (((uint64_t)(x) & 0x0000ff0000000000ULL) >> 24) |               \
+     (((uint64_t)(x) & 0x00ff000000000000ULL) >> 40) |               \
+     (((uint64_t)(x) & 0xff00000000000000ULL) >> 56))
+
+static void xor_bytes(unsigned char *dst, const unsigned char *a,
+                      const unsigned char *b, size_t n)
+{
+    while (n--) {
+        *dst++ = *a++ ^ *b++;
+    }
+}
+
+/* GHASH core multiply: x = x * y in GF(2^128). Both operands are stored as two
+ * 64-bit words in big-endian order (word[0] is the most-significant 64 bits). */
+static void gmult(uint64_t x[2], const uint64_t y[2])
+{
+    uint64_t z[2] = { 0, 0 };
+    uint64_t v[2] = { x[0], x[1] };
+
+    for (int i = 0; i < 2; i++) {
+        uint64_t y_tmp = y[i];
+        for (int j = 0; j < 64; j++) {
+            uint64_t mask = 0 - (y_tmp >> 63);
+            z[0] ^= v[0] & mask;
+            z[1] ^= v[1] & mask;
+            uint64_t v1 = (0 - (v[1] & 1)) & 0xe100000000000000ULL;
+            v[1] >>= 1;
+            v[1] |= v[0] << 63;
+            v[0] >>= 1;
+            v[0] ^= v1;
+            y_tmp <<= 1;
+        }
+    }
+
+    x[0] = z[0];
+    x[1] = z[1];
+}
+
+/* One-shot GHASH over AAD (a) and ciphertext (c); s receives the 16-byte
+ * GHASH output. big_h is E_K(0) held in big-endian u64 form. */
+static void ghash(const uint64_t big_h[2],
+                  const unsigned char *a, size_t a_size,
+                  const unsigned char *c, size_t c_size,
+                  unsigned char *s)
+{
+    uint64_t x[2] = { 0, 0 };
+    uint64_t block[2];
+    size_t n;
+
+    n = a_size / 16;
+    while (n--) {
+        memcpy(block, a, 16);
+        x[0] ^= BSWAP_64(block[0]);
+        x[1] ^= BSWAP_64(block[1]);
+        gmult(x, big_h);
+        a += 16;
+    }
+    n = a_size % 16;
+    if (n) {
+        memset(block, 0, 16);
+        memcpy(block, a, n);
+        x[0] ^= BSWAP_64(block[0]);
+        x[1] ^= BSWAP_64(block[1]);
+        gmult(x, big_h);
+    }
+
+    n = c_size / 16;
+    while (n--) {
+        memcpy(block, c, 16);
+        x[0] ^= BSWAP_64(block[0]);
+        x[1] ^= BSWAP_64(block[1]);
+        gmult(x, big_h);
+        c += 16;
+    }
+    n = c_size % 16;
+    if (n) {
+        memset(block, 0, 16);
+        memcpy(block, c, n);
+        x[0] ^= BSWAP_64(block[0]);
+        x[1] ^= BSWAP_64(block[1]);
+        gmult(x, big_h);
+    }
+
+    /* Lengths of A and C in bits, as big-endian 64-bit values. */
+    x[0] ^= (uint64_t)a_size * 8;
+    x[1] ^= (uint64_t)c_size * 8;
+    gmult(x, big_h);
+
+    x[0] = BSWAP_64(x[0]);
+    x[1] = BSWAP_64(x[1]);
+    memcpy(s, x, 16);
+}
+
+/* Increment the 32-bit GCM counter (last four bytes, big-endian). */
+static void gcm_incr(unsigned char y[16])
+{
+    uint32_t x = ((uint32_t)y[12] << 24) | ((uint32_t)y[13] << 16) |
+                 ((uint32_t)y[14] << 8) | (uint32_t)y[15];
+    x++;
+    y[12] = (unsigned char)(x >> 24);
+    y[13] = (unsigned char)(x >> 16);
+    y[14] = (unsigned char)(x >> 8);
+    y[15] = (unsigned char)x;
+}
+
+void mbedtls_sm4_gcm_init(mbedtls_sm4_gcm_context *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+
+    memset(ctx, 0, sizeof(mbedtls_sm4_gcm_context));
+}
+
+void mbedtls_sm4_gcm_free(mbedtls_sm4_gcm_context *ctx)
+{
+    if (ctx == NULL) {
+        return;
+    }
+    mbedtls_platform_zeroize(ctx, sizeof(mbedtls_sm4_gcm_context));
+}
+
+int mbedtls_sm4_gcm_setkey(mbedtls_sm4_gcm_context *ctx, const unsigned char *key)
+{
+    unsigned char h[16];
+    uint64_t big_h[2];
+
+    if (ctx == NULL || key == NULL) {
+        return -EINVAL;
+    }
+
+    memcpy(ctx->cipher.key, key, SM4_KEY_SIZE);
+
+    /* H = E_K(0^128), the GHASH key, kept in big-endian form for gmult(). */
+    memset(h, 0, sizeof(h));
+    k_mutex_lock(&sm4_hw_mutex, K_FOREVER);
+    sm4_hw_setkey(ctx->cipher.key);
+    sm4_hw_encrypt_block(h, h);
+    k_mutex_unlock(&sm4_hw_mutex);
+
+    memcpy(big_h, h, 16);
+    ctx->H[0] = BSWAP_64(big_h[0]);
+    ctx->H[1] = BSWAP_64(big_h[1]);
+
+    return 0;
+}
+
+int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
+                                  size_t length,
+                                  const unsigned char *iv, size_t iv_len,
+                                  const unsigned char *add, size_t add_len,
+                                  const unsigned char *input, unsigned char *output,
+                                  size_t tag_len, unsigned char *tag)
+{
+    unsigned char j0[16];
+    unsigned char ej0[16];
+    unsigned char s[16];
+    unsigned char counter[16];
+    unsigned char keystream[16];
+    const unsigned char *in = input;
+    unsigned char *out = output;
+    const unsigned char *ct;
+    size_t left;
+
+    if (ctx == NULL || iv == NULL || tag == NULL) {
+        return -EINVAL;
+    }
+    if ((input == NULL || output == NULL) && length > 0) {
+        return -EINVAL;
+    }
+    if (add == NULL && add_len > 0) {
+        return -EINVAL;
+    }
+    if (tag_len < 4 || tag_len > 16) {
+        return -EINVAL;
+    }
+    if (iv_len != 12) {
+        return -EINVAL;
+    }
+
+    /* J0 = IV || 0^31 || 1. */
+    memcpy(j0, iv, 12);
+    j0[12] = j0[13] = j0[14] = 0;
+    j0[15] = 1;
+    memcpy(counter, j0, 16);
+
+    k_mutex_lock(&sm4_hw_mutex, K_FOREVER);
+    sm4_hw_setkey(ctx->cipher.key);
+
+    /* E_K(J0) is the tag mask. */
+    sm4_hw_encrypt_block(j0, ej0);
+
+    /* GCTR: out = keystream ^ in. */
+    left = length;
+    while (left >= 16) {
+        gcm_incr(counter);
+        sm4_hw_encrypt_block(counter, keystream);
+        xor_bytes(out, in, keystream, 16);
+        in += 16;
+        out += 16;
+        left -= 16;
+    }
+    if (left) {
+        gcm_incr(counter);
+        sm4_hw_encrypt_block(counter, keystream);
+        xor_bytes(out, in, keystream, left);
+    }
+
+    k_mutex_unlock(&sm4_hw_mutex);
+
+    /* GHASH is over the ciphertext; tag = S ^ E_K(J0). */
+    ct = (mode == MBEDTLS_SM4_GCM_ENCRYPT) ? output : input;
+    ghash(ctx->H, add, add_len, ct, length, s);
+    for (size_t i = 0; i < tag_len; i++) {
+        tag[i] = s[i] ^ ej0[i];
+    }
+
+    return 0;
+}
+
+static int sm4_ct_memcmp(const unsigned char *a, const unsigned char *b, size_t n)
+{
+    unsigned char diff = 0;
+    while (n--) {
+        diff |= (unsigned char)(*a++ ^ *b++);
+    }
+    return diff;
+}
+
+int mbedtls_sm4_gcm_auth_decrypt(mbedtls_sm4_gcm_context *ctx, size_t length,
+                                 const unsigned char *iv, size_t iv_len,
+                                 const unsigned char *add, size_t add_len,
+                                 const unsigned char *tag, size_t tag_len,
+                                 const unsigned char *input, unsigned char *output)
+{
+    int ret;
+    unsigned char check_tag[16];
+
+    if ((ret = mbedtls_sm4_gcm_crypt_and_tag(ctx, MBEDTLS_SM4_GCM_DECRYPT, length,
+                                             iv, iv_len, add, add_len,
+                                             input, output, tag_len, check_tag)) != 0) {
+        return ret;
+    }
+
+    if (sm4_ct_memcmp(tag, check_tag, tag_len) != 0) {
+        mbedtls_platform_zeroize(output, length);
+        return -EBADMSG;
+    }
+
+    return 0;
+}
+
 #endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT */

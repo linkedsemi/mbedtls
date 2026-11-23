@@ -31,6 +31,33 @@ int mbedtls_sm4_crypt_ctr(mbedtls_sm4_context *ctx, size_t length, size_t *nc_of
                           unsigned char nonce_counter[16], unsigned char stream_block[16],
                           const unsigned char *input, unsigned char *output);
 
+#define MBEDTLS_SM4_GCM_ENCRYPT 1
+#define MBEDTLS_SM4_GCM_DECRYPT 0
+
+typedef struct mbedtls_sm4_gcm_context {
+    mbedtls_sm4_context cipher;
+    uint64_t H[2];
+} mbedtls_sm4_gcm_context;
+
+void mbedtls_sm4_gcm_init(mbedtls_sm4_gcm_context *ctx);
+
+void mbedtls_sm4_gcm_free(mbedtls_sm4_gcm_context *ctx);
+
+int mbedtls_sm4_gcm_setkey(mbedtls_sm4_gcm_context *ctx, const unsigned char *key);
+
+int mbedtls_sm4_gcm_crypt_and_tag(mbedtls_sm4_gcm_context *ctx, int mode,
+                                  size_t length,
+                                  const unsigned char *iv, size_t iv_len,
+                                  const unsigned char *add, size_t add_len,
+                                  const unsigned char *input, unsigned char *output,
+                                  size_t tag_len, unsigned char *tag);
+
+int mbedtls_sm4_gcm_auth_decrypt(mbedtls_sm4_gcm_context *ctx, size_t length,
+                                 const unsigned char *iv, size_t iv_len,
+                                 const unsigned char *add, size_t add_len,
+                                 const unsigned char *tag, size_t tag_len,
+                                 const unsigned char *input, unsigned char *output);
+
 #endif /* CONFIG_MBEDTLS_SM4_LINKEDSEMI_HARDWARE_ALT */
 
 #endif /* SM4_ALT_H */
